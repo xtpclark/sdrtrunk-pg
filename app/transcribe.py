@@ -62,8 +62,31 @@ def transcribe_call(call_id: int):
     # Transcribe
     try:
         model = load_model()
-        result = model.transcribe(file_path, fp16=False)
-        transcript = result.get("text", "").strip()
+        result = model.transcribe(
+            file_path,
+            language="en",                  # skip language detection
+            condition_on_previous_text=False, # prevent hallucination chaining
+            no_speech_threshold=0.6,        # discard near-silence (default 0.6, raise if noisy)
+            logprob_threshold=-1.0,         # discard low-confidence segments
+            compression_ratio_threshold=2.4,# discard repetitive/noise output
+            fp16=True,                      # GPU inference
+        )
+        # Filter out segments with low avg log probability
+        segments = result.get("segments", [])
+        if segments:
+            avg_logprob = sum(s.get("avg_logprob", 0) for s in segments) / len(segments)
+            if avg_logprob < -1.0:
+                log.info("Call %d: low confidence (avg_logprob=%.2f), discarding transcript", call_id, avg_logprob)
+                transcript = ""
+            else:
+                transcript = result.get("text", "").strip()
+        else:
+            transcript = result.get("text", "").strip()
+
+        # Discard very short transcripts that are likely noise artifacts
+        if len(transcript) < 3:
+            transcript = ""
+
     except Exception as exc:
         log.error("Whisper failed for call %d (%s): %s", call_id, file_path, exc)
         return
