@@ -163,6 +163,201 @@ def list_talkgroups():
     return jsonify({"talkgroups": rows, "count": len(rows)})
 
 
+@bp.route("/api/live_feed", methods=["GET"])
+def live_feed():
+    """
+    GET /api/live_feed — last N calls with transcript, talkgroup name, category, etc.
+    params: limit (default 50)
+    """
+    limit = min(request.args.get("limit", 50, type=int), 500)
+
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                c.id,
+                c.ts AT TIME ZONE 'America/New_York' AS ts,
+                c.tg,
+                coalesce(t.alpha_tag, c.tg::text) AS alpha_tag,
+                t.category,
+                c.radio_id,
+                c.duration_sec,
+                c.transcript,
+                c.file_path IS NOT NULL AND c.file_path != '' AS has_audio,
+                ic.incident_id
+            FROM calls c
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            LEFT JOIN LATERAL (
+                SELECT incident_id
+                FROM incident_calls
+                WHERE call_id = c.id
+                ORDER BY incident_id DESC
+                LIMIT 1
+            ) ic ON true
+            ORDER BY c.ts DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    for r in rows:
+        if r["ts"]:
+            r["ts"] = r["ts"].isoformat()
+
+    return jsonify(rows)
+
+
+@bp.route("/api/threads", methods=["GET"])
+def threads():
+    """
+    GET /api/threads — all active incidents, located + unlocated.
+    Returns located (has_location=true) and unlocated separately,
+    sorted: active first, then by last_activity desc.
+    """
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                i.id,
+                i.address,
+                i.category,
+                i.call_count,
+                i.unit_count,
+                i.last_activity AT TIME ZONE 'America/New_York' AS last_activity,
+                i.opened_at    AT TIME ZONE 'America/New_York' AS opened_at,
+                i.status,
+                i.has_location,
+                CASE WHEN i.location IS NOT NULL
+                    THEN ST_Y(i.location) ELSE NULL END AS lat,
+                CASE WHEN i.location IS NOT NULL
+                    THEN ST_X(i.location) ELSE NULL END AS lon,
+                (
+                    SELECT c.transcript
+                    FROM incident_calls ic2
+                    JOIN calls c ON c.id = ic2.call_id
+                    WHERE ic2.incident_id = i.id
+                      AND c.transcript IS NOT NULL
+                    ORDER BY c.ts DESC
+                    LIMIT 1
+                ) AS last_transcript,
+                (
+                    SELECT coalesce(t2.alpha_tag, c2.tg::text)
+                    FROM incident_calls ic3
+                    JOIN calls c2 ON c2.id = ic3.call_id
+                    LEFT JOIN talkgroups t2 ON t2.tg_decimal = c2.tg
+                    WHERE ic3.incident_id = i.id
+                    ORDER BY c2.ts DESC
+                    LIMIT 1
+                ) AS last_alpha_tag
+            FROM incidents i
+            WHERE i.status = 'active'
+               OR i.last_activity > now() - interval '5 minutes'
+            ORDER BY
+                CASE WHEN i.status = 'active' THEN 0 ELSE 1 END,
+                i.last_activity DESC
+            LIMIT 100
+            """,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    located   = []
+    unlocated = []
+    for r in rows:
+        for k in ("last_activity", "opened_at"):
+            if r[k]:
+                r[k] = r[k].isoformat()
+        if r["has_location"]:
+            located.append(r)
+        else:
+            unlocated.append(r)
+
+    return jsonify({"located": located, "unlocated": unlocated})
+
+
+@bp.route("/api/incidents/<int:incident_id>/detail", methods=["GET"])
+def incident_detail(incident_id):
+    """
+    GET /api/incidents/<id>/detail — full incident detail for click-through.
+    """
+    with db() as conn:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                i.id,
+                i.address,
+                i.category,
+                i.call_count,
+                i.unit_count,
+                i.status,
+                i.has_location,
+                i.opened_at    AT TIME ZONE 'America/New_York' AS opened_at,
+                i.closed_at    AT TIME ZONE 'America/New_York' AS closed_at,
+                i.last_activity AT TIME ZONE 'America/New_York' AS last_activity,
+                CASE WHEN i.location IS NOT NULL
+                    THEN ST_Y(i.location) ELSE NULL END AS lat,
+                CASE WHEN i.location IS NOT NULL
+                    THEN ST_X(i.location) ELSE NULL END AS lon
+            FROM incidents i
+            WHERE i.id = %s
+            """,
+            (incident_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            from flask import abort
+            abort(404)
+        incident = dict(row)
+
+        for k in ("opened_at", "closed_at", "last_activity"):
+            if incident[k]:
+                incident[k] = incident[k].isoformat()
+
+        cur.execute(
+            """
+            SELECT
+                ic.call_id AS id,
+                c.ts AT TIME ZONE 'America/New_York' AS ts,
+                c.tg,
+                coalesce(t.alpha_tag, c.tg::text) AS alpha_tag,
+                ic.radio_id,
+                c.duration_sec,
+                c.transcript,
+                c.file_path IS NOT NULL AND c.file_path != '' AS has_audio,
+                ic.join_reason
+            FROM incident_calls ic
+            JOIN calls c ON c.id = ic.call_id
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            WHERE ic.incident_id = %s
+            ORDER BY c.ts ASC
+            """,
+            (incident_id,),
+        )
+        calls = [dict(r) for r in cur.fetchall()]
+        for c in calls:
+            if c["ts"]:
+                c["ts"] = c["ts"].isoformat()
+
+        cur.execute(
+            """
+            SELECT DISTINCT radio_id
+            FROM incident_calls
+            WHERE incident_id = %s AND radio_id IS NOT NULL
+            ORDER BY radio_id
+            """,
+            (incident_id,),
+        )
+        units = [r["radio_id"] for r in cur.fetchall()]
+
+    incident["calls"] = calls
+    incident["units"] = units
+    return jsonify(incident)
+
+
 @bp.route("/api/stats", methods=["GET"])
 def stats():
     with db() as conn:

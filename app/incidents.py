@@ -5,13 +5,18 @@ Called after entity extraction + geocoding completes for each call.
 Determines if a call should open a new incident or join an existing one.
 
 Logic:
-1. If call has a geocoded address entity → try to open/extend incident
-   a. Check for active incident within 500m (last 30 min) → join (geo_proximity)
-   b. Check for active incident where this radio_id already participated → join (anchor_radio)
-   c. Check for active incident on same TG within 5 min → join (tg_window)
-   d. None found → create new incident (anchor)
-2. Any call (with or without address) whose radio_id already appears in an
-   active incident → join that incident (anchor_radio)
+1. Always try to find/create an incident for every call.
+2. For calls with a geocoded address → full matching cascade:
+   a. geo_proximity  — active incident within 500m (last 30 min)
+   b. anchor_radio   — caller's radio_id already in active incident
+   c. tg_window      — same TG with activity within ±5 min
+   d. anchor         — create new incident WITH location
+3. For calls WITHOUT geocoded address:
+   a. anchor_radio   — join by radio_id
+   b. tg_window      — join by TG window
+   c. anchor         — create new unlocated incident
+4. "Promotion": when joining an unlocated incident and the incoming call
+   has a geocoded address → set location/address/has_location on incident.
 
 Background closer: incidents with no activity for 15 min → status='closed'.
 """
@@ -122,25 +127,45 @@ def _find_incident_by_tg(tg: int, ts: datetime, window_minutes: int = 5) -> int 
 
 def _create_incident(
     call_id: int,
-    address: str,
-    lat: float,
-    lon: float,
+    address: str | None,
+    lat: float | None,
+    lon: float | None,
     category: str | None,
     ts: datetime,
     radio_id: str | None,
 ) -> int:
     """
-    Create a new incident anchored to *call_id*. Returns the new incident id.
+    Create a new incident anchored to *call_id*.
+    Works with or without lat/lon/address.
+    Returns the new incident id.
     """
-    sql_incident = """
-        INSERT INTO incidents
-            (anchor_call_id, address, location, category,
-             opened_at, last_activity, status, call_count, unit_count)
-        VALUES
-            (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s,
-             %s, %s, 'active', 1, 1)
-        RETURNING id
-    """
+    has_location = lat is not None and lon is not None
+
+    if has_location:
+        sql_incident = """
+            INSERT INTO incidents
+                (anchor_call_id, address, location, category,
+                 opened_at, last_activity, status, call_count, unit_count,
+                 has_location)
+            VALUES
+                (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s,
+                 %s, %s, 'active', 1, 1, true)
+            RETURNING id
+        """
+        sql_params = (call_id, address, lon, lat, category, ts, ts)
+    else:
+        sql_incident = """
+            INSERT INTO incidents
+                (anchor_call_id, address, location, category,
+                 opened_at, last_activity, status, call_count, unit_count,
+                 has_location)
+            VALUES
+                (%s, %s, NULL, %s,
+                 %s, %s, 'active', 1, 1, false)
+            RETURNING id
+        """
+        sql_params = (call_id, address, category, ts, ts)
+
     sql_ic = """
         INSERT INTO incident_calls (incident_id, call_id, radio_id, join_reason)
         VALUES (%s, %s, %s, 'anchor')
@@ -148,15 +173,40 @@ def _create_incident(
     """
     with db() as conn:
         cur = conn.cursor()
-        cur.execute(sql_incident, (call_id, address, lon, lat, category, ts, ts))
+        cur.execute(sql_incident, sql_params)
         incident_id = cur.fetchone()["id"]
         cur.execute(sql_ic, (incident_id, call_id, radio_id))
 
     log.info(
-        "Created incident %d for call %d @ %s (category=%s)",
-        incident_id, call_id, address, category,
+        "Created incident %d for call %d @ %s (category=%s, has_location=%s)",
+        incident_id, call_id, address or "unlocated", category, has_location,
     )
     return incident_id
+
+
+def _promote_incident_location(
+    incident_id: int, address: str, lat: float, lon: float
+) -> None:
+    """
+    Promote an unlocated incident by setting its geographic location.
+    Called when a call with a geocoded address joins an unlocated incident.
+    """
+    sql = """
+        UPDATE incidents
+        SET address      = %s,
+            location     = ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+            has_location = true
+        WHERE id = %s
+          AND has_location = false
+    """
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (address, lon, lat, incident_id))
+
+    log.info(
+        "Promoted incident %d to location %s (%.5f, %.5f)",
+        incident_id, address, lat, lon,
+    )
 
 
 def _join_incident(
@@ -165,9 +215,13 @@ def _join_incident(
     radio_id: str | None,
     reason: str,
     ts: datetime | None = None,
+    address: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
 ) -> None:
     """
     Add *call_id* to an existing incident and update aggregate counters.
+    If address/lat/lon provided and incident is unlocated → promote it.
     """
     if ts is None:
         ts = datetime.now(timezone.utc)
@@ -195,6 +249,10 @@ def _join_incident(
         cur = conn.cursor()
         cur.execute(sql_ic, (incident_id, call_id, radio_id, reason, ts))
         cur.execute(sql_update, (ts, incident_id, incident_id, incident_id))
+
+    # Promote if we now have location data and incident didn't before
+    if lat is not None and lon is not None and address:
+        _promote_incident_location(incident_id, address, lat, lon)
 
     log.info(
         "Joined call %d to incident %d (reason=%s, radio_id=%s)",
@@ -239,15 +297,21 @@ def process_call_for_incidents(call_id: int) -> None:
     """
     Main entry point. Called after geocoding completes for *call_id*.
 
-    Determines whether the call should open a new incident or join an existing
-    one, applying the following priority order for calls with a geocoded address:
+    Every call is eligible to join or create an incident.
 
-      1. geo_proximity  — active incident within 500 m (last 30 min)
-      2. anchor_radio   — caller's radio_id is already in an active incident
-      3. tg_window      — same TG with activity within ±5 min
-      4. anchor         — create new incident (call has address and none of above matched)
+    For calls WITH geocoded address (full cascade):
+      1. geo_proximity  — active incident within 500 m
+      2. anchor_radio   — radio_id in active incident
+      3. tg_window      — same TG within ±5 min
+      4. anchor         — create new located incident
 
-    For calls *without* a geocoded address, only anchor_radio is checked.
+    For calls WITHOUT geocoded address:
+      1. anchor_radio   — radio_id in active incident
+      2. tg_window      — same TG within ±5 min
+      3. anchor         — create new unlocated incident
+
+    Promotion: joining an unlocated incident with a geocoded call
+    → incident gets location/address/has_location promoted.
     """
     # ------------------------------------------------------------------
     # Fetch call metadata + best geocoded address entity
@@ -298,34 +362,44 @@ def process_call_for_incidents(call_id: int) -> None:
         # 1. Geo proximity
         incident_id = _find_incident_by_geo(lat, lon)
         if incident_id:
-            _join_incident(incident_id, call_id, radio_id, "geo_proximity", ts)
+            _join_incident(incident_id, call_id, radio_id, "geo_proximity", ts,
+                           address=address, lat=lat, lon=lon)
             return
 
         # 2. Anchor radio
         if radio_id:
             incident_id = _find_incident_by_radio(radio_id)
             if incident_id:
-                _join_incident(incident_id, call_id, radio_id, "anchor_radio", ts)
+                _join_incident(incident_id, call_id, radio_id, "anchor_radio", ts,
+                               address=address, lat=lat, lon=lon)
                 return
 
         # 3. TG window
         incident_id = _find_incident_by_tg(tg, ts)
         if incident_id:
-            _join_incident(incident_id, call_id, radio_id, "tg_window", ts)
+            _join_incident(incident_id, call_id, radio_id, "tg_window", ts,
+                           address=address, lat=lat, lon=lon)
             return
 
-        # 4. Create new incident (anchor)
+        # 4. Create new located incident
         _create_incident(call_id, address, lat, lon, category, ts, radio_id)
         return
 
     # ------------------------------------------------------------------
-    # Path B: no geocoded address — only join via radio_id
+    # Path B: no geocoded address — join or create unlocated incident
     # ------------------------------------------------------------------
+    # 1. Anchor radio
     if radio_id:
         incident_id = _find_incident_by_radio(radio_id)
         if incident_id:
             _join_incident(incident_id, call_id, radio_id, "anchor_radio", ts)
             return
 
-    # No match and no address → not part of any incident
-    log.debug("call %d: no incident match (no geo, no matching radio_id)", call_id)
+    # 2. TG window
+    incident_id = _find_incident_by_tg(tg, ts)
+    if incident_id:
+        _join_incident(incident_id, call_id, radio_id, "tg_window", ts)
+        return
+
+    # 3. Create new unlocated incident
+    _create_incident(call_id, None, None, None, category, ts, radio_id)

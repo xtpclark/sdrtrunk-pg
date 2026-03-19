@@ -3,676 +3,1328 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SDRTrunk Live Map — Hampton Roads</title>
-
-  <!-- Leaflet CSS -->
+  <title>SDRTrunk Live — Hampton Roads</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* ── CSS Variables ──────────────────────────────────────────────── */
+    :root {
+      --primary:   #2c3e50;
+      --success:   #27ae60;
+      --danger:    #e74c3c;
+      --warning:   #f39c12;
+      --info:      #3498db;
+
+      --bg:        #1a1a2e;
+      --card:      #16213e;
+      --accent:    #0f3460;
+      --border:    #1e3a5f;
+      --text:      #e0e0e0;
+      --muted:     #888;
+
+      --police:    #3b82f6;
+      --fire:      #ef4444;
+      --ems:       #f97316;
+      --other:     #6b7280;
+    }
+
+    /* ── Reset ──────────────────────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #1a1a2e;
-      color: #e0e0e0;
+      background: var(--bg);
+      color: var(--text);
       height: 100vh;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
 
-    /* ── Stats bar ── */
-    #stats-bar {
+    /* ── Animations ─────────────────────────────────────────────────── */
+    @keyframes flashGreen {
+      0%,100% { background-color: transparent; }
+      50%     { background-color: rgba(39, 174, 96, 0.35); border-color: var(--success); }
+    }
+    @keyframes flashRed {
+      0%,100% { background-color: transparent; }
+      50%     { background-color: rgba(231, 76, 60, 0.35); border-color: var(--danger); }
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes slideInRight {
+      from { opacity: 0; transform: translateX(100%); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; transform: translateY(0); }
+      to   { opacity: 0; transform: translateY(-10px); }
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.4); }
+      70%     { box-shadow: 0 0 0 10px rgba(255,255,255,0); }
+    }
+    @keyframes pulsePolice { 0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,.5);} 70%{box-shadow:0 0 0 12px rgba(59,130,246,0);} }
+    @keyframes pulseFire   { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.5);}  70%{box-shadow:0 0 0 12px rgba(239,68,68,0);}  }
+    @keyframes pulseEMS    { 0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,.5);} 70%{box-shadow:0 0 0 12px rgba(249,115,22,0);} }
+
+    .metric-increase { animation: flashGreen 0.8s; }
+    .metric-decrease { animation: flashRed   0.8s; }
+
+    /* ── Change indicator (floating +N / -N) ────────────────────────── */
+    .change-indicator {
+      position: absolute;
+      top: -8px;
+      right: -4px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 8px;
+      pointer-events: none;
+      animation: fadeOut 1.5s forwards;
+      z-index: 10;
+    }
+    .change-up   { background: var(--success); color: #fff; }
+    .change-down { background: var(--danger);  color: #fff; }
+
+    /* ── Header bar ─────────────────────────────────────────────────── */
+    #header {
       display: flex;
-      gap: 24px;
       align-items: center;
-      padding: 8px 16px;
-      background: #16213e;
-      border-bottom: 1px solid #0f3460;
-      font-size: 13px;
+      gap: 0;
+      padding: 0 16px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      height: 48px;
+      flex-shrink: 0;
+      z-index: 200;
+    }
+
+    #header h1 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #4cc9f0;
+      white-space: nowrap;
+      margin-right: 16px;
+    }
+
+    .hdr-divider {
+      width: 1px;
+      height: 28px;
+      background: var(--border);
+      margin: 0 12px;
       flex-shrink: 0;
     }
 
-    #stats-bar h1 {
-      font-size: 15px;
-      font-weight: 600;
-      color: #4cc9f0;
-      margin-right: 8px;
-    }
-
-    .stat-item {
+    .hdr-stat {
       display: flex;
       flex-direction: column;
       align-items: center;
+      position: relative;
+      cursor: default;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.15s;
     }
 
-    .stat-value {
-      font-size: 18px;
+    .hdr-stat-val {
+      font-size: 17px;
       font-weight: 700;
       color: #f0f0f0;
+      line-height: 1.1;
     }
 
-    .stat-label {
-      font-size: 10px;
+    .hdr-stat-lbl {
+      font-size: 9px;
       text-transform: uppercase;
-      color: #888;
-      letter-spacing: 0.5px;
-    }
-
-    .stat-divider {
-      width: 1px;
-      height: 32px;
-      background: #0f3460;
+      color: var(--muted);
+      letter-spacing: 0.4px;
+      white-space: nowrap;
     }
 
     #last-call-time {
       margin-left: auto;
-      font-size: 12px;
-      color: #888;
-    }
-
-    #refresh-indicator {
       font-size: 11px;
-      color: #666;
+      color: var(--muted);
+      white-space: nowrap;
     }
 
-    /* ── Alert banner ── */
-    #alert-bar {
-      display: none;
-      background: #c0392b;
-      color: #fff;
-      padding: 6px 16px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
+    .live-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      animation: pulseFire 1.5s infinite;
+      margin-left: 6px;
+      vertical-align: middle;
     }
 
-    #alert-bar:hover { background: #e74c3c; }
+    #refresh-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-left: 10px;
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    #refresh-dot.active { background: #4cc9f0; }
 
-    /* ── Map ── */
-    #map {
+    /* ── Middle row (sidebar + map) ─────────────────────────────────── */
+    #middle {
       flex: 1;
+      display: flex;
+      overflow: hidden;
     }
 
-    /* ── Legend ── */
+    /* ── Left sidebar ───────────────────────────────────────────────── */
+    #sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 5px 0 15px rgba(0,0,0,0.2);
+      overflow: hidden;
+      z-index: 100;
+    }
+
+    #sidebar-header {
+      padding: 8px 12px 6px;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.6px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #sidebar-scroll {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    #sidebar-scroll::-webkit-scrollbar { width: 4px; }
+    #sidebar-scroll::-webkit-scrollbar-track { background: var(--card); }
+    #sidebar-scroll::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 2px; }
+
+    .section-label {
+      padding: 8px 12px 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .section-count {
+      background: var(--accent);
+      color: var(--text);
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 8px;
+    }
+
+    /* ── Thread cards ───────────────────────────────────────────────── */
+    .thread-card {
+      margin: 4px 8px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-left: 3px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      animation: slideIn 0.3s ease;
+    }
+
+    .thread-card:hover {
+      background: var(--accent);
+      border-color: #2a5a8f;
+    }
+
+    .thread-card.selected {
+      border-left-color: #4cc9f0;
+      background: rgba(76,201,240,0.08);
+    }
+
+    .thread-card.cat-police { border-left-color: var(--police); }
+    .thread-card.cat-fire   { border-left-color: var(--fire); }
+    .thread-card.cat-ems    { border-left-color: var(--ems); }
+    .thread-card.cat-other  { border-left-color: var(--other); }
+
+    .thread-card.selected.cat-police { background: rgba(59,130,246,0.12); }
+    .thread-card.selected.cat-fire   { background: rgba(239,68,68,0.12); }
+    .thread-card.selected.cat-ems    { background: rgba(249,115,22,0.12); }
+
+    .tc-row1 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 3px;
+    }
+
+    .tc-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .tc-tag {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tc-status {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 8px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .tc-status.active { background: rgba(39,174,96,0.2); color: var(--success); }
+    .tc-status.closed { background: rgba(136,136,136,0.15); color: var(--muted); }
+
+    .tc-meta {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+
+    .tc-transcript {
+      font-size: 11px;
+      color: #b0b0b0;
+      font-style: italic;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Incident age progress bar ──────────────────────────────────── */
+    .tc-age-bar {
+      margin-top: 5px;
+      height: 3px;
+      background: var(--accent);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .tc-age-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.5s;
+    }
+
+    /* ── Map container ──────────────────────────────────────────────── */
+    #map-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ── Layer control override (dark) ──────────────────────────────── */
+    .leaflet-control-layers {
+      background: var(--card) !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
+    }
+    .leaflet-control-layers label { color: var(--text) !important; font-size: 12px; }
+
+    /* ── Legend ─────────────────────────────────────────────────────── */
     .legend {
-      background: rgba(22, 33, 62, 0.92);
-      border: 1px solid #0f3460;
+      background: rgba(22,33,62,0.92);
+      border: 1px solid var(--border);
       padding: 10px 14px;
       border-radius: 6px;
       font-size: 12px;
       line-height: 1.8;
+      color: var(--text);
     }
-
     .legend h4 {
-      margin-bottom: 6px;
-      font-size: 11px;
+      margin-bottom: 4px;
+      font-size: 10px;
       text-transform: uppercase;
-      color: #888;
+      color: var(--muted);
       letter-spacing: 0.5px;
     }
+    .legend-item { display: flex; align-items: center; gap: 8px; }
+    .legend-dot  { width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.3); }
 
-    .legend-item {
+    /* ── Incident circles on map ─────────────────────────────────────── */
+    .incident-circle {
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.6);
+      cursor: pointer;
+      transition: transform 0.15s;
+    }
+    .incident-circle:hover { transform: scale(1.15); }
+    .incident-circle.active-police { animation: pulsePolice 2s infinite; }
+    .incident-circle.active-fire   { animation: pulseFire   2s infinite; }
+    .incident-circle.active-ems    { animation: pulseEMS    2s infinite; }
+    .incident-circle.active-other  { animation: pulse       2s infinite; }
+    .incident-circle.closed        { opacity: 0.35; filter: grayscale(70%); border-color: rgba(255,255,255,0.2); }
+
+    /* ── Popup ───────────────────────────────────────────────────────── */
+    .leaflet-popup-content-wrapper {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    .leaflet-popup-tip { background: var(--card); }
+    .leaflet-popup-content { margin: 12px 14px; }
+
+    /* ── Detail panel (slides in from right) ────────────────────────── */
+    #detail-panel {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 360px;
+      background: var(--card);
+      border-left: 1px solid var(--border);
+      box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      z-index: 500;
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(.4,0,.2,1);
+      overflow: hidden;
+    }
+    #detail-panel.open {
+      transform: translateX(0);
+      animation: slideInRight 0.3s ease;
+    }
+
+    #detail-header {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #detail-title {
+      flex: 1;
+    }
+
+    #detail-title h2 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #4cc9f0;
+      margin-bottom: 2px;
+    }
+
+    #detail-meta {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    #detail-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 3px;
+      transition: color 0.15s;
+    }
+    #detail-close:hover { color: var(--text); }
+
+    #detail-units {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #detail-units-inner {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .unit-badge {
+      background: var(--accent);
+      color: var(--text);
+      font-size: 10px;
+      font-family: monospace;
+      padding: 2px 7px;
+      border-radius: 10px;
+    }
+
+    #detail-calls {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 0;
+    }
+    #detail-calls::-webkit-scrollbar { width: 4px; }
+    #detail-calls::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 2px; }
+
+    .detail-call-row {
+      padding: 6px 14px;
+      border-bottom: 1px solid rgba(30,58,95,0.5);
+      display: grid;
+      grid-template-columns: 52px 1fr auto;
+      gap: 6px;
+      align-items: start;
+      animation: slideIn 0.2s ease;
+    }
+    .detail-call-row:hover { background: rgba(255,255,255,0.03); }
+
+    .dc-time {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: monospace;
+      padding-top: 1px;
+    }
+
+    .dc-body {
+      min-width: 0;
+    }
+
+    .dc-radio {
+      font-size: 10px;
+      color: #4cc9f0;
+      font-family: monospace;
+      margin-bottom: 2px;
+    }
+
+    .dc-transcript {
+      font-size: 11px;
+      color: #c0c0c0;
+      font-style: italic;
+      line-height: 1.3;
+    }
+
+    .dc-play {
+      background: none;
+      border: 1px solid var(--accent);
+      color: #4cc9f0;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .dc-play:hover { background: var(--accent); }
+    .dc-play:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    #detail-footer {
+      padding: 8px 14px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #btn-play-all {
+      width: 100%;
+      background: var(--accent);
+      border: 1px solid #2a5a8f;
+      color: #4cc9f0;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #btn-play-all:hover { background: #1a4a7a; }
+
+    /* ── Bottom feed ────────────────────────────────────────────────── */
+    #feed {
+      height: 180px;
+      flex-shrink: 0;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #feed-header {
+      padding: 4px 12px;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .legend-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.4);
-    }
-
-    /* ── Call popup ── */
-    .leaflet-popup-content-wrapper {
-      background: #16213e;
-      color: #e0e0e0;
-      border: 1px solid #0f3460;
-      border-radius: 6px;
-    }
-
-    .leaflet-popup-tip {
-      background: #16213e;
-    }
-
-    .popup-header {
-      font-weight: 600;
-      font-size: 14px;
-      color: #4cc9f0;
-      margin-bottom: 6px;
-    }
-
-    .popup-meta {
-      font-size: 11px;
-      color: #888;
-      margin-bottom: 8px;
-    }
-
-    .popup-transcript {
-      font-size: 12px;
-      font-style: italic;
-      color: #bbb;
-      background: rgba(0,0,0,0.2);
-      padding: 6px 8px;
-      border-radius: 4px;
-      margin-bottom: 8px;
-      max-height: 80px;
+    #feed-scroll {
+      flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
     }
+    #feed-scroll::-webkit-scrollbar { width: 4px; }
+    #feed-scroll::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 2px; }
 
-    .popup-audio audio {
-      width: 100%;
-      height: 28px;
+    .feed-row {
+      display: grid;
+      grid-template-columns: 54px 90px 100px 1fr auto;
+      gap: 8px;
+      padding: 4px 12px;
+      border-bottom: 1px solid rgba(30,58,95,0.4);
+      border-left: 3px solid transparent;
+      align-items: center;
+      cursor: pointer;
+      transition: background 0.1s;
+      animation: slideIn 0.25s ease;
+      font-size: 11px;
     }
+    .feed-row:hover { background: rgba(255,255,255,0.04); }
+    .feed-row.selected-row { background: rgba(76,201,240,0.07); }
 
+    .feed-row.cat-police { border-left-color: var(--police); }
+    .feed-row.cat-fire   { border-left-color: var(--fire); }
+    .feed-row.cat-ems    { border-left-color: var(--ems); }
+    .feed-row.cat-other  { border-left-color: var(--other); }
+
+    .fr-time  { font-family: monospace; color: var(--muted); }
+    .fr-badge { }
+    .fr-unit  { font-family: monospace; color: #4cc9f0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fr-tx    { color: #c0c0c0; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fr-play  {
+      background: none;
+      border: 1px solid var(--accent);
+      color: #4cc9f0;
+      font-size: 10px;
+      padding: 2px 5px;
+      border-radius: 3px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .fr-play:hover   { background: var(--accent); }
+    .fr-play:disabled { opacity: 0.25; cursor: not-allowed; }
+
+    /* ── Badges ─────────────────────────────────────────────────────── */
     .badge {
       display: inline-block;
-      padding: 2px 7px;
-      border-radius: 10px;
-      font-size: 10px;
-      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-size: 9px;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.3px;
+      white-space: nowrap;
     }
+    .badge-police { background: rgba(59,130,246,0.25);  color: #93c5fd; }
+    .badge-fire   { background: rgba(239,68,68,0.25);   color: #fca5a5; }
+    .badge-ems    { background: rgba(249,115,22,0.25);  color: #fdba74; }
+    .badge-other  { background: rgba(107,114,128,0.25); color: #d1d5db; }
 
-    .badge-police { background: #1565c0; color: #fff; }
-    .badge-fire   { background: #b71c1c; color: #fff; }
-    .badge-ems    { background: #e65100; color: #fff; }
-    .badge-other  { background: #424242; color: #ccc; }
-
-    /* ── Incident circles ── */
-    @keyframes pulse {
-      0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.5); }
-      70%  { box-shadow: 0 0 0 12px rgba(255,255,255,0); }
-      100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
-    }
-
-    .incident-circle {
-      border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.7);
-      opacity: 0.85;
-      cursor: pointer;
-    }
-
-    .incident-circle.active {
-      animation: pulse 2s infinite;
-    }
-
-    .incident-circle.closed {
-      opacity: 0.35;
-      filter: grayscale(80%);
-      border-color: rgba(255,255,255,0.3);
-    }
-
-    .popup-incident-title {
-      font-weight: 700;
-      font-size: 14px;
-      color: #4cc9f0;
-      margin-bottom: 4px;
-    }
-
-    .popup-incident-meta {
-      font-size: 11px;
-      color: #888;
-      margin-bottom: 6px;
-    }
-
-    .popup-incident-units {
-      font-size: 11px;
-      color: #ccc;
-      background: rgba(0,0,0,0.2);
-      padding: 4px 6px;
-      border-radius: 4px;
-      margin-bottom: 6px;
-      font-family: monospace;
-    }
-
-    .popup-incident-transcripts {
-      font-size: 11px;
-      font-style: italic;
-      color: #bbb;
-      background: rgba(0,0,0,0.15);
-      padding: 5px 8px;
-      border-radius: 4px;
-      margin-bottom: 8px;
-      max-height: 80px;
-      overflow-y: auto;
-    }
-
-    .popup-incident-transcripts p {
-      margin: 2px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      padding-bottom: 2px;
-    }
-
-    .btn-play-incident {
-      display: inline-block;
-      background: #1565c0;
-      color: #fff;
-      border: none;
-      padding: 4px 10px;
-      border-radius: 4px;
+    /* ── Alert bar ───────────────────────────────────────────────────── */
+    #alert-bar {
+      display: none;
+      background: #7f1d1d;
+      color: #fecaca;
+      padding: 5px 16px;
       font-size: 12px;
+      font-weight: 500;
       cursor: pointer;
-      text-decoration: none;
+      flex-shrink: 0;
     }
+    #alert-bar:hover { background: #991b1b; }
 
-    .btn-play-incident:hover { background: #1976d2; }
+    /* ── Audio player (hidden) ───────────────────────────────────────── */
+    #audio-player { display: none; }
+
+    /* ── Popup styles ───────────────────────────────────────────────── */
+    .popup-title  { font-weight: 700; font-size: 13px; color: #4cc9f0; margin-bottom: 4px; }
+    .popup-meta   { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .popup-tx     { font-size: 11px; font-style: italic; color: #bbb; background: rgba(0,0,0,0.2); padding: 5px 8px; border-radius: 4px; margin-bottom: 6px; max-height: 70px; overflow-y: auto; }
+    .popup-btn    { background: var(--accent); border: none; color: #4cc9f0; font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+    .popup-btn:hover { background: #1a4a7a; }
   </style>
 </head>
 <body>
 
-<!-- Stats bar -->
-<div id="stats-bar">
-  <h1>📡 SDRTrunk Live</h1>
-  <div class="stat-divider"></div>
-  <div class="stat-item">
-    <span class="stat-value" id="calls-today">—</span>
-    <span class="stat-label">Calls Today</span>
+<!-- Header -->
+<div id="header">
+  <h1>📡 SDRTrunk Live <span class="live-dot"></span></h1>
+  <div class="hdr-divider"></div>
+  <div class="hdr-stat" id="stat-calls">
+    <span class="hdr-stat-val" id="calls-today">—</span>
+    <span class="hdr-stat-lbl">Calls Today</span>
   </div>
-  <div class="stat-divider"></div>
-  <div class="stat-item">
-    <span class="stat-value" id="active-tgs">—</span>
-    <span class="stat-label">Active TGs (1h)</span>
+  <div class="hdr-divider"></div>
+  <div class="hdr-stat" id="stat-tgs">
+    <span class="hdr-stat-val" id="active-tgs">—</span>
+    <span class="hdr-stat-lbl">Active TGs (1h)</span>
   </div>
-  <div class="stat-divider"></div>
-  <div class="stat-item">
-    <span class="stat-value" id="active-incidents">—</span>
-    <span class="stat-label">Active Incidents</span>
+  <div class="hdr-divider"></div>
+  <div class="hdr-stat" id="stat-incidents">
+    <span class="hdr-stat-val" id="active-incidents">—</span>
+    <span class="hdr-stat-lbl">Active Incidents</span>
   </div>
-  <div class="stat-divider"></div>
+  <div class="hdr-divider"></div>
   <span id="last-call-time">Last call: —</span>
-  <span id="refresh-indicator">● refreshing</span>
+  <div id="refresh-dot"></div>
 </div>
 
-<!-- Alert banner (shown when recent alerts exist) -->
-<div id="alert-bar" onclick="document.getElementById('alert-bar').style.display='none'">
-  ⚠ <span id="alert-text"></span> &nbsp;·&nbsp; click to dismiss
+<!-- Alert bar -->
+<div id="alert-bar" onclick="this.style.display='none'">
+  ⚠ <span id="alert-text"></span> · click to dismiss
 </div>
 
-<!-- Map -->
-<div id="map"></div>
+<!-- Middle row -->
+<div id="middle">
 
-<!-- Leaflet JS -->
+  <!-- Left sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-header">Incident Threads</div>
+    <div id="sidebar-scroll">
+      <div class="section-label">
+        📍 Located
+        <span class="section-count" id="located-count">0</span>
+      </div>
+      <div id="located-list"></div>
+
+      <div class="section-label" style="margin-top:6px">
+        📻 Unlocated
+        <span class="section-count" id="unlocated-count">0</span>
+      </div>
+      <div id="unlocated-list"></div>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div id="map-wrap">
+    <div id="map"></div>
+
+    <!-- Detail panel -->
+    <div id="detail-panel">
+      <div id="detail-header">
+        <div id="detail-title">
+          <h2 id="dp-address">Incident</h2>
+          <div id="detail-meta"></div>
+        </div>
+        <button id="detail-close" onclick="closeDetail()">✕</button>
+      </div>
+      <div id="detail-units">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Units</div>
+        <div id="detail-units-inner"></div>
+      </div>
+      <div id="detail-calls"></div>
+      <div id="detail-footer">
+        <button id="btn-play-all" onclick="playAll()">▶ Play All Audio</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom live feed -->
+<div id="feed">
+  <div id="feed-header">
+    📡 Live Feed
+    <span id="feed-paused" style="color:#f39c12;display:none">⏸ paused (hover)</span>
+  </div>
+  <div id="feed-scroll">
+    <div id="feed-rows"></div>
+  </div>
+</div>
+
+<!-- Hidden audio player -->
+<audio id="audio-player"></audio>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- Leaflet.heat -->
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 
 <script>
-  // ── Map init ──────────────────────────────────────────────────────────
-  const NORFOLK = [36.8508, -76.2859];
+// ═══════════════════════════════════════════════════════════════════════
+// Constants & state
+// ═══════════════════════════════════════════════════════════════════════
+const NORFOLK = [36.8508, -76.2859];
+const CATEGORY_COLORS = {
+  police: '#3b82f6', fire: '#ef4444', ems: '#f97316', other: '#6b7280'
+};
 
-  const map = L.map('map', {
-    center: NORFOLK,
-    zoom: 12,
-    preferCanvas: true,
-  });
+let selectedIncidentId = null;
+let incidentMarkers    = {};   // id → L.Marker
+let feedHovered        = false;
+let lastFeedId         = 0;
+let playQueue          = [];
+let playIndex          = 0;
 
-  // Dark tile layer (CartoDB Dark Matter)
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 19,
-  }).addTo(map);
+// Stat tracking for flash/change animations
+const prevStats = { calls: null, tgs: null, incidents: null };
 
-  // ── Category colours ─────────────────────────────────────────────────
-  const CATEGORY_COLORS = {
-    'Police':   '#2196f3',
-    'Fire':     '#f44336',
-    'EMS':      '#ff9800',
-    'Other':    '#9e9e9e',
-  };
+// ═══════════════════════════════════════════════════════════════════════
+// Map init
+// ═══════════════════════════════════════════════════════════════════════
+const map = L.map('map', { center: NORFOLK, zoom: 12, preferCanvas: true });
 
-  function categoryColor(cat) {
-    if (!cat) return CATEGORY_COLORS['Other'];
-    const key = Object.keys(CATEGORY_COLORS).find(k =>
-      cat.toLowerCase().includes(k.toLowerCase())
-    );
-    return key ? CATEGORY_COLORS[key] : CATEGORY_COLORS['Other'];
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OSM contributors &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19,
+}).addTo(map);
+
+const heatLayer    = L.heatLayer([], {
+  radius: 25, blur: 20, maxZoom: 17,
+  gradient: { 0.2:'#1a237e', 0.5:'#0d47a1', 0.7:'#ff6f00', 1.0:'#b71c1c' },
+}).addTo(map);
+
+const incidentLayer = L.layerGroup().addTo(map);
+const callDotLayer  = L.layerGroup().addTo(map);
+
+L.control.layers(null, {
+  'Heatmap':     heatLayer,
+  'Incidents':   incidentLayer,
+  'Call Dots':   callDotLayer,
+}, { position: 'topright', collapsed: false }).addTo(map);
+
+// Legend
+const legend = L.control({ position: 'bottomright' });
+legend.onAdd = () => {
+  const d = L.DomUtil.create('div', 'legend');
+  d.innerHTML = `
+    <h4>Category</h4>
+    ${Object.entries(CATEGORY_COLORS).map(([k,v]) => `
+      <div class="legend-item">
+        <div class="legend-dot" style="background:${v}"></div>
+        <span style="text-transform:capitalize">${k}</span>
+      </div>`).join('')}
+    <div style="margin-top:8px;padding-top:6px;border-top:1px solid #0f3460;font-size:11px;color:#888">
+      Pulsing = active<br>Gray = closed
+    </div>`;
+  return d;
+};
+legend.addTo(map);
+
+// ═══════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════
+function catKey(cat) {
+  if (!cat) return 'other';
+  const c = cat.toLowerCase();
+  if (c.includes('police') || c.includes('law')) return 'police';
+  if (c.includes('fire'))   return 'fire';
+  if (c.includes('ems') || c.includes('medical')) return 'ems';
+  return 'other';
+}
+
+function catColor(cat) {
+  return CATEGORY_COLORS[catKey(cat)];
+}
+
+function badge(cat) {
+  const k = catKey(cat);
+  const label = cat || 'Other';
+  return `<span class="badge badge-${k}">${label}</span>`;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false });
+}
+
+function fmtAgo(iso) {
+  if (!iso) return '—';
+  const secs = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (secs < 60)  return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+  return Math.floor(secs/3600) + 'h ago';
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', { month:'short', day:'numeric',
+    hour:'2-digit', minute:'2-digit', hour12: false });
+}
+
+// Age bar: 0–30 min = 0–100%
+function agePct(iso) {
+  if (!iso) return 0;
+  const mins = (Date.now() - new Date(iso)) / 60000;
+  return Math.min(100, (mins / 30) * 100);
+}
+
+function ageBarColor(pct) {
+  if (pct < 40)  return '#27ae60';
+  if (pct < 70)  return '#f39c12';
+  return '#e74c3c';
+}
+
+// Animate header stat change
+function animateStat(elId, newVal, prevVal) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (prevVal === null) return;
+  el.parentElement.classList.remove('metric-increase', 'metric-decrease');
+  void el.parentElement.offsetWidth; // reflow
+  if (newVal > prevVal) {
+    el.parentElement.classList.add('metric-increase');
+    showChangeIndicator(el.parentElement, '+' + (newVal - prevVal), true);
+  } else if (newVal < prevVal) {
+    el.parentElement.classList.add('metric-decrease');
+    showChangeIndicator(el.parentElement, '-' + (prevVal - newVal), false);
   }
+}
 
-  function categoryBadge(cat) {
-    if (!cat) return '<span class="badge badge-other">Other</span>';
-    if (cat.toLowerCase().includes('police')) return `<span class="badge badge-police">${cat}</span>`;
-    if (cat.toLowerCase().includes('fire'))   return `<span class="badge badge-fire">${cat}</span>`;
-    if (cat.toLowerCase().includes('ems'))    return `<span class="badge badge-ems">${cat}</span>`;
-    return `<span class="badge badge-other">${cat}</span>`;
-  }
+function showChangeIndicator(parent, text, isUp) {
+  const old = parent.querySelector('.change-indicator');
+  if (old) old.remove();
+  const el = document.createElement('span');
+  el.className = 'change-indicator ' + (isUp ? 'change-up' : 'change-down');
+  el.textContent = text;
+  parent.style.position = 'relative';
+  parent.appendChild(el);
+  setTimeout(() => el.remove(), 1600);
+}
 
-  function makeIcon(color) {
-    return L.divIcon({
-      className: '',
-      html: `<div style="
-        width:14px;height:14px;
-        border-radius:50%;
-        background:${color};
-        border:2px solid rgba(255,255,255,0.6);
-        box-shadow:0 0 6px ${color}88;
-      "></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7],
-      popupAnchor: [0, -10],
-    });
-  }
+// ═══════════════════════════════════════════════════════════════════════
+// Stats refresh (every 5s)
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshStats() {
+  try {
+    const r    = await fetch('/map/stats');
+    const data = await r.json();
 
-  // ── Legend ────────────────────────────────────────────────────────────
-  const legend = L.control({ position: 'bottomright' });
-  legend.onAdd = () => {
-    const div = L.DomUtil.create('div', 'legend');
-    div.innerHTML = `
-      <h4>Category</h4>
-      ${Object.entries(CATEGORY_COLORS).map(([k,v]) =>
-        `<div class="legend-item">
-          <div class="legend-dot" style="background:${v};border-color:${v}88"></div>
-          <span>${k}</span>
-        </div>`
-      ).join('')}
-      <div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">
-        <h4>Incidents</h4>
-        <div style="font-size:11px;color:#888">Pulsing = active<br>Gray = closed</div>
+    const callsNow = data.calls_today ?? 0;
+    const tgsNow   = data.active_talkgroups ?? 0;
+
+    animateStat('calls-today', callsNow, prevStats.calls);
+    animateStat('active-tgs',  tgsNow,   prevStats.tgs);
+
+    document.getElementById('calls-today').textContent = callsNow;
+    document.getElementById('active-tgs').textContent  = tgsNow;
+    document.getElementById('last-call-time').textContent =
+      'Last call: ' + fmtTime(data.last_call_ts);
+
+    prevStats.calls = callsNow;
+    prevStats.tgs   = tgsNow;
+
+    if (data.recent_alerts && data.recent_alerts.length) {
+      const a = data.recent_alerts[0];
+      document.getElementById('alert-text').textContent = a.message;
+      document.getElementById('alert-bar').style.display = 'block';
+    }
+  } catch(e) { console.warn('stats err', e); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sidebar threads refresh (every 5s)
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshThreads() {
+  try {
+    const r    = await fetch('/api/threads');
+    const data = await r.json();
+
+    renderThreadSection('located-list',   data.located   || []);
+    renderThreadSection('unlocated-list', data.unlocated || []);
+
+    document.getElementById('located-count').textContent   = (data.located   || []).length;
+    document.getElementById('unlocated-count').textContent = (data.unlocated || []).length;
+
+    // Active incidents count for header
+    const activeCount = [...(data.located||[]), ...(data.unlocated||[])]
+      .filter(i => i.status === 'active').length;
+
+    animateStat('active-incidents', activeCount, prevStats.incidents);
+    document.getElementById('active-incidents').textContent = activeCount;
+    prevStats.incidents = activeCount;
+
+  } catch(e) { console.warn('threads err', e); }
+}
+
+function renderThreadSection(containerId, items) {
+  const container = document.getElementById(containerId);
+
+  items.forEach(item => {
+    const k      = catKey(item.category);
+    const color  = CATEGORY_COLORS[k];
+    const pct    = agePct(item.opened_at);
+    const barCol = ageBarColor(pct);
+    const tx     = (item.last_transcript || '').slice(0, 60);
+
+    let el = document.getElementById('thread-' + item.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'thread-' + item.id;
+      el.className = `thread-card cat-${k}`;
+      el.onclick = () => selectThread(item.id, item.lat, item.lon);
+      container.appendChild(el);
+    }
+
+    if (item.id === selectedIncidentId) {
+      el.classList.add('selected');
+    } else {
+      el.classList.remove('selected');
+    }
+
+    el.innerHTML = `
+      <div class="tc-row1">
+        <div class="tc-dot" style="background:${color}"></div>
+        <span class="tc-tag">${item.last_alpha_tag || item.address || 'Incident #'+item.id}</span>
+        <span class="tc-status ${item.status}">${item.status}</span>
       </div>
-      <div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">
-        <h4>Heatmap</h4>
-        <div style="font-size:11px;color:#888">Geocoded entities<br>last 60 min</div>
+      <div class="tc-meta">
+        ${item.call_count} call${item.call_count!==1?'s':''} ·
+        ${item.unit_count} unit${item.unit_count!==1?'s':''} ·
+        ${fmtAgo(item.last_activity)}
+      </div>
+      ${tx ? `<div class="tc-transcript">"${tx}"</div>` : ''}
+      <div class="tc-age-bar">
+        <div class="tc-age-fill" style="width:${pct}%;background:${barCol}"></div>
       </div>
     `;
-    return div;
-  };
-  legend.addTo(map);
+  });
 
-  // ── Layers ────────────────────────────────────────────────────────────
-  let heatLayer = L.heatLayer([], {
-    radius: 25,
-    blur: 20,
-    maxZoom: 17,
-    gradient: { 0.2: '#1a237e', 0.4: '#0d47a1', 0.6: '#ff6f00', 0.8: '#e65100', 1.0: '#b71c1c' },
-  }).addTo(map);
+  // Remove stale cards
+  const currentIds = new Set(items.map(i => 'thread-' + i.id));
+  [...container.children].forEach(ch => {
+    if (!currentIds.has(ch.id)) ch.remove();
+  });
+}
 
-  const incidentMarkerLayer = L.layerGroup().addTo(map);  // incident circles
-  const incidentLayer       = L.layerGroup().addTo(map);  // legacy call dots
+// ═══════════════════════════════════════════════════════════════════════
+// Map incidents refresh (every 10s)
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshMapIncidents() {
+  try {
+    const r   = await fetch('/map/incidents_geo?minutes=120&status=all');
+    const geo = await r.json();
 
-  // Layer controls
-  const overlays = {
-    'Heatmap':         heatLayer,
-    'Incident Pins':   incidentMarkerLayer,
-    'Call Dots':       incidentLayer,
-  };
-  L.control.layers(null, overlays, { position: 'topright', collapsed: false }).addTo(map);
+    const currentIds = new Set();
 
-  // ── Helpers ───────────────────────────────────────────────────────────
-  function fmt(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts);
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  }
+    for (const f of geo.features) {
+      if (!f.geometry) continue;
+      const p      = f.properties;
+      const latlng = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+      const k      = catKey(p.category);
+      const color  = CATEGORY_COLORS[k];
+      const active = p.status === 'active';
+      const radius = Math.min(40, Math.max(12, 10 + (p.call_count||1) * 2));
+      const cls    = `incident-circle ${active ? 'active-'+k : 'closed'}`;
 
-  function fmtFull(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts);
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  }
+      currentIds.add(p.id);
 
-  // ── Refresh heatmap ───────────────────────────────────────────────────
-  async function refreshHeatmap() {
-    try {
-      const resp = await fetch('/map/heatmap?minutes=60');
-      const geo  = await resp.json();
-      const pts  = geo.features.map(f => [
-        f.geometry.coordinates[1],  // lat
-        f.geometry.coordinates[0],  // lon
-        f.properties.weight || 1,
-      ]);
-      heatLayer.setLatLngs(pts);
-    } catch (e) {
-      console.warn('heatmap refresh failed:', e);
-    }
-  }
-
-  // ── Refresh incidents ─────────────────────────────────────────────────
-  async function refreshIncidents() {
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const resp  = await fetch(`/map/incidents?date=${today}`);
-      const geo   = await resp.json();
-
-      incidentLayer.clearLayers();
-
-      for (const f of geo.features) {
-        if (!f.geometry) continue;  // no location
-
-        const p    = f.properties;
-        const latlng = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
-        const color  = categoryColor(p.category);
-        const icon   = makeIcon(color);
-
-        const transcript = p.transcript
-          ? `<div class="popup-transcript">"${p.transcript}"</div>`
-          : '';
-
-        const popup = `
-          <div class="popup-header">${p.alpha_tag || 'TG ' + p.tg}</div>
-          <div class="popup-meta">
-            ${categoryBadge(p.category)}
-            &nbsp; ${fmtFull(p.ts)}
-            &nbsp; · &nbsp; ${p.duration ? p.duration.toFixed(1) + 's' : '—'}
-          </div>
-          ${transcript}
-          <div class="popup-audio">
-            <audio controls preload="none">
-              <source src="/api/calls/${p.id}/audio" type="audio/mpeg" />
-            </audio>
-          </div>
-        `;
-
-        L.marker(latlng, { icon })
-          .bindPopup(popup, { maxWidth: 280 })
-          .addTo(incidentLayer);
-      }
-    } catch (e) {
-      console.warn('incidents refresh failed:', e);
-    }
-  }
-
-  // ── Incident audio player ────────────────────────────────────────────
-  function playIncident(incidentId) {
-    const win = window.open('', '_blank', 'width=420,height=360,scrollbars=yes');
-    if (!win) return;
-    win.document.write(`
-      <html><head><title>Incident #${incidentId} Audio</title>
-      <style>
-        body { font-family: sans-serif; background:#111; color:#eee; padding:12px; }
-        h2   { font-size:14px; color:#4cc9f0; margin:0 0 10px; }
-        .track { border-bottom:1px solid #333; padding:6px 0; font-size:12px; }
-        .track audio { width:100%; height:26px; display:block; margin-top:4px; }
-      </style></head><body>
-      <h2>▶ Incident #${incidentId} Playlist</h2>
-      <div id="tracks">Loading…</div>
-      <script>
-        fetch('/api/incidents/${incidentId}/audio_playlist')
-          .then(r => r.json())
-          .then(data => {
-            const el = document.getElementById('tracks');
-            if (!data.tracks || !data.tracks.length) {
-              el.textContent = 'No audio available.'; return;
-            }
-            el.innerHTML = data.tracks.map((t,i) => \`
-              <div class="track">
-                <span>#\${i+1} \${t.alpha_tag || ''} \${t.radio_id || ''} — \${t.ts ? new Date(t.ts).toLocaleTimeString() : ''}</span>
-                <div style="font-size:11px;color:#888;font-style:italic">\${t.transcript || ''}</div>
-                <audio controls preload="none">
-                  <source src="\${t.audio_url}" type="audio/mpeg" />
-                </audio>
-              </div>
-            \`).join('');
-          })
-          .catch(e => { document.getElementById('tracks').textContent = 'Error: '+e; });
-      <\/script>
-      </body></html>
-    `);
-    win.document.close();
-  }
-
-  // ── Refresh incident marker layer ─────────────────────────────────────
-  async function refreshIncidentMarkers() {
-    try {
-      const resp = await fetch('/map/incidents_geo?minutes=120&status=all');
-      const geo  = await resp.json();
-
-      incidentMarkerLayer.clearLayers();
-
-      let activeCount = 0;
-
-      for (const f of geo.features) {
-        if (!f.geometry) continue;
-
-        const p      = f.properties;
-        const latlng = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
-        const color  = categoryColor(p.category);
-        const isActive = p.status === 'active';
-
-        if (isActive) activeCount++;
-
-        // Radius grows with call count (min 12, max 40px)
-        const radius = Math.min(40, Math.max(12, 10 + (p.call_count || 1) * 3));
-        const cssClass = `incident-circle ${isActive ? 'active' : 'closed'}`;
-
-        const icon = L.divIcon({
-          className: '',
-          html: `<div class="${cssClass}" style="
-            width:${radius}px; height:${radius}px;
-            background:${isActive ? color : '#555'};
-          "></div>`,
-          iconSize:   [radius, radius],
-          iconAnchor: [radius/2, radius/2],
-          popupAnchor: [0, -radius/2 - 4],
-        });
-
-        // Fetch last 3 transcripts for this incident
-        const snippets = await fetchIncidentSnippets(p.id);
-
-        const unitsHtml = snippets.units && snippets.units.length
-          ? `<div class="popup-incident-units">Units: ${snippets.units.join(', ')}</div>`
-          : '';
-
-        const transcriptHtml = snippets.transcripts && snippets.transcripts.length
-          ? `<div class="popup-incident-transcripts">
-               ${snippets.transcripts.map(t => `<p>${t}</p>`).join('')}
-             </div>`
-          : '';
-
-        const popup = `
-          <div class="popup-incident-title">
-            ${isActive ? '🔴' : '⚫'} Incident #${p.id}
-          </div>
-          <div class="popup-incident-meta">
-            ${categoryBadge(p.category)}
-            &nbsp; Opened: ${fmtFull(p.opened_at)}
-          </div>
-          <div class="popup-incident-meta">
-            📍 ${p.address || 'Unknown location'}
-          </div>
-          <div class="popup-incident-meta">
-            📞 ${p.call_count} call${p.call_count !== 1 ? 's' : ''}
-            &nbsp;·&nbsp;
-            🎙 ${p.unit_count} unit${p.unit_count !== 1 ? 's' : ''}
-            &nbsp;·&nbsp;
-            ${isActive ? '<b style="color:#4caf50">ACTIVE</b>' : '<span style="color:#888">closed</span>'}
-          </div>
-          ${unitsHtml}
-          ${transcriptHtml}
-          <button class="btn-play-incident" onclick="playIncident(${p.id})">
-            ▶ Play Incident Audio
-          </button>
-        `;
-
-        L.marker(latlng, { icon })
-          .bindPopup(popup, { maxWidth: 300 })
-          .addTo(incidentMarkerLayer);
+      if (incidentMarkers[p.id]) {
+        // Update icon only (position won't change)
+        incidentMarkers[p.id].setIcon(makeIncidentIcon(cls, radius, active ? color : '#555'));
+        continue;
       }
 
-      // Update stat counter
-      const el = document.getElementById('active-incidents');
-      if (el) el.textContent = activeCount;
+      const icon   = makeIncidentIcon(cls, radius, active ? color : '#555');
+      const marker = L.marker(latlng, { icon })
+        .bindPopup(makeIncidentPopup(p), { maxWidth: 300 })
+        .addTo(incidentLayer);
 
-    } catch (e) {
-      console.warn('incident marker refresh failed:', e);
+      marker.on('click', () => {
+        selectThread(p.id, latlng[0], latlng[1]);
+        openDetail(p.id);
+      });
+
+      incidentMarkers[p.id] = marker;
     }
-  }
 
-  // Cache to avoid re-fetching same incident detail on every refresh
-  const _snippetCache = {};
-
-  async function fetchIncidentSnippets(incidentId) {
-    if (_snippetCache[incidentId]) return _snippetCache[incidentId];
-    try {
-      const resp = await fetch(`/api/incidents/${incidentId}`);
-      if (!resp.ok) return {};
-      const data = await resp.json();
-      const calls = data.calls || [];
-      const last3 = calls.slice(-3);
-      const result = {
-        units:       data.units || [],
-        transcripts: last3.map(c => c.transcript || '').filter(Boolean).map(t => t.slice(0, 100)),
-      };
-      // Only cache closed incidents (active ones may change)
-      if (data.status === 'closed') _snippetCache[incidentId] = result;
-      return result;
-    } catch (_) {
-      return {};
-    }
-  }
-
-  // ── Refresh stats ─────────────────────────────────────────────────────
-  async function refreshStats() {
-    try {
-      const resp  = await fetch('/map/stats');
-      const stats = await resp.json();
-
-      document.getElementById('calls-today').textContent = stats.calls_today ?? '—';
-      document.getElementById('active-tgs').textContent  = stats.active_talkgroups ?? '—';
-      document.getElementById('last-call-time').textContent =
-        'Last call: ' + fmt(stats.last_call_ts);
-
-      // Show alert banner if recent alerts
-      if (stats.recent_alerts && stats.recent_alerts.length > 0) {
-        const latest = stats.recent_alerts[0];
-        document.getElementById('alert-text').textContent = latest.message;
-        document.getElementById('alert-bar').style.display = 'block';
+    // Remove old markers
+    Object.keys(incidentMarkers).forEach(id => {
+      if (!currentIds.has(parseInt(id))) {
+        incidentLayer.removeLayer(incidentMarkers[id]);
+        delete incidentMarkers[id];
       }
-    } catch (e) {
-      console.warn('stats refresh failed:', e);
-    }
-  }
+    });
 
-  // ── Refresh indicator ─────────────────────────────────────────────────
-  let refreshActive = false;
-  function setRefreshing(active) {
-    const el = document.getElementById('refresh-indicator');
-    if (active) {
-      el.style.color = '#4cc9f0';
-      el.textContent = '● refreshing';
-    } else {
-      el.style.color = '#555';
-      el.textContent = '○ idle';
-    }
-  }
+  } catch(e) { console.warn('map incidents err', e); }
+}
 
-  // ── Main refresh cycle ────────────────────────────────────────────────
-  async function refresh() {
-    setRefreshing(true);
-    await Promise.all([
-      refreshHeatmap(),
-      refreshIncidents(),
-      refreshIncidentMarkers(),
-      refreshStats(),
+function makeIncidentIcon(cls, radius, color) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="${cls}" style="width:${radius}px;height:${radius}px;background:${color}"></div>`,
+    iconSize: [radius, radius],
+    iconAnchor: [radius/2, radius/2],
+    popupAnchor: [0, -radius/2 - 4],
+  });
+}
+
+function makeIncidentPopup(p) {
+  return `
+    <div class="popup-title">${p.status==='active'?'🔴':'⚫'} Incident #${p.id}</div>
+    <div class="popup-meta">${badge(p.category)} · ${fmtDateTime(p.opened_at)}</div>
+    <div class="popup-meta">📍 ${p.address || 'Located'}</div>
+    <div class="popup-meta">📞 ${p.call_count} calls · 🎙 ${p.unit_count} units</div>
+    <button class="popup-btn" onclick="openDetail(${p.id})">View Detail →</button>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Heatmap refresh
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshHeatmap() {
+  try {
+    const r   = await fetch('/map/heatmap?minutes=60');
+    const geo = await r.json();
+    const pts = geo.features.map(f => [
+      f.geometry.coordinates[1], f.geometry.coordinates[0], 1
     ]);
-    setRefreshing(false);
-  }
+    heatLayer.setLatLngs(pts);
+  } catch(e) { console.warn('heatmap err', e); }
+}
 
-  // Initial load + 30-second auto-refresh
-  refresh();
-  setInterval(refresh, 30_000);
+// ═══════════════════════════════════════════════════════════════════════
+// Live feed refresh (every 5s)
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshFeed() {
+  if (feedHovered) return;
+  try {
+    const r    = await fetch('/api/live_feed?limit=80');
+    const rows = await r.json();
+    if (!rows.length) return;
+
+    const newest  = rows[0].id;
+    if (newest === lastFeedId) return;
+
+    const container = document.getElementById('feed-rows');
+    const newRows   = lastFeedId === 0 ? rows : rows.filter(r => r.id > lastFeedId);
+    lastFeedId      = newest;
+
+    newRows.forEach(row => {
+      const k   = catKey(row.category);
+      const el  = document.createElement('div');
+      el.id     = 'feed-row-' + row.id;
+      el.className = `feed-row cat-${k}`;
+      el.dataset.incidentId = row.incident_id || '';
+      el.onclick = () => {
+        if (row.incident_id) {
+          selectThread(row.incident_id, null, null);
+          openDetail(row.incident_id);
+        }
+      };
+
+      const playDisabled = !row.has_audio ? 'disabled' : '';
+      el.innerHTML = `
+        <span class="fr-time">${fmtTime(row.ts)}</span>
+        <span class="fr-badge">${badge(row.category)}</span>
+        <span class="fr-unit">Unit ${row.radio_id || '—'}</span>
+        <span class="fr-tx">${row.transcript ? '"'+row.transcript.slice(0,120)+'"' : row.alpha_tag || ''}</span>
+        <button class="fr-play" ${playDisabled}
+          onclick="event.stopPropagation();playCall(${row.id})">▶</button>
+      `;
+
+      container.insertBefore(el, container.firstChild);
+    });
+
+    // Trim to 150 rows
+    while (container.children.length > 150) {
+      container.removeChild(container.lastChild);
+    }
+
+    // Highlight rows matching selected incident
+    highlightFeedForIncident(selectedIncidentId);
+
+  } catch(e) { console.warn('feed err', e); }
+}
+
+function highlightFeedForIncident(id) {
+  document.querySelectorAll('.feed-row').forEach(el => {
+    el.classList.toggle('selected-row', el.dataset.incidentId == id);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Select thread (sidebar card + map focus + feed highlight)
+// ═══════════════════════════════════════════════════════════════════════
+function selectThread(id, lat, lon) {
+  selectedIncidentId = id;
+
+  // Highlight sidebar
+  document.querySelectorAll('.thread-card').forEach(el => {
+    el.classList.toggle('selected', el.id === 'thread-' + id);
+  });
+
+  // Highlight feed
+  highlightFeedForIncident(id);
+
+  // Fly to on map if we have coords
+  if (lat && lon) {
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Detail panel
+// ═══════════════════════════════════════════════════════════════════════
+async function openDetail(incidentId) {
+  selectedIncidentId = incidentId;
+
+  const panel = document.getElementById('detail-panel');
+  panel.classList.add('open');
+
+  document.getElementById('dp-address').textContent = 'Loading…';
+  document.getElementById('detail-meta').textContent = '';
+  document.getElementById('detail-units-inner').innerHTML = '';
+  document.getElementById('detail-calls').innerHTML = '';
+
+  try {
+    const r    = await fetch('/api/incidents/' + incidentId + '/detail');
+    const data = await r.json();
+
+    document.getElementById('dp-address').textContent =
+      data.address || (data.has_location ? 'Located' : 'Unlocated — Incident #' + incidentId);
+
+    const openedMins = data.opened_at
+      ? Math.floor((Date.now() - new Date(data.opened_at)) / 60000)
+      : '?';
+
+    document.getElementById('detail-meta').innerHTML =
+      `${badge(data.category)} · ` +
+      `Opened ${openedMins}m ago · ` +
+      `${data.call_count} calls · ${data.unit_count} units · ` +
+      `<span style="color:${data.status==='active'?'#27ae60':'#888'}">${data.status}</span>`;
+
+    // Units
+    const unitsEl = document.getElementById('detail-units-inner');
+    if (data.units && data.units.length) {
+      unitsEl.innerHTML = data.units
+        .map(u => `<span class="unit-badge">${u}</span>`)
+        .join('');
+    } else {
+      unitsEl.innerHTML = '<span style="color:var(--muted);font-size:11px">None recorded</span>';
+    }
+
+    // Calls
+    const callsEl = document.getElementById('detail-calls');
+    if (data.calls && data.calls.length) {
+      callsEl.innerHTML = data.calls.map(c => `
+        <div class="detail-call-row">
+          <span class="dc-time">${fmtTime(c.ts)}</span>
+          <div class="dc-body">
+            <div class="dc-radio">Unit ${c.radio_id || '—'} · ${c.alpha_tag || ''}</div>
+            <div class="dc-transcript">${c.transcript ? '"'+c.transcript.slice(0,140)+'"' : '<em style="color:var(--muted)">no transcript</em>'}</div>
+          </div>
+          <button class="dc-play" ${c.has_audio?'':'disabled'}
+            onclick="playCall(${c.id})">▶</button>
+        </div>
+      `).join('');
+    } else {
+      callsEl.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px">No calls yet.</div>';
+    }
+
+    // Store for Play All
+    playQueue = (data.calls || []).filter(c => c.has_audio).map(c => c.id);
+    playIndex = 0;
+
+    // Highlight sidebar
+    document.querySelectorAll('.thread-card').forEach(el => {
+      el.classList.toggle('selected', el.id === 'thread-' + incidentId);
+    });
+
+  } catch(e) {
+    document.getElementById('dp-address').textContent = 'Error loading incident.';
+    console.error('detail err', e);
+  }
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('open');
+  selectedIncidentId = null;
+  document.querySelectorAll('.thread-card').forEach(el => el.classList.remove('selected'));
+  highlightFeedForIncident(null);
+  stopAudio();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Audio playback
+// ═══════════════════════════════════════════════════════════════════════
+const audioEl = document.getElementById('audio-player');
+
+function playCall(callId) {
+  audioEl.src = '/api/calls/' + callId + '/audio';
+  audioEl.play().catch(e => console.warn('audio err', e));
+}
+
+function stopAudio() {
+  audioEl.pause();
+  audioEl.src = '';
+}
+
+function playAll() {
+  if (!playQueue.length) return;
+  playIndex = 0;
+  playNextInQueue();
+}
+
+function playNextInQueue() {
+  if (playIndex >= playQueue.length) return;
+  const callId = playQueue[playIndex++];
+  audioEl.src  = '/api/calls/' + callId + '/audio';
+  audioEl.onended = playNextInQueue;
+  audioEl.play().catch(e => console.warn('queue err', e));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Feed hover pause
+// ═══════════════════════════════════════════════════════════════════════
+const feedEl = document.getElementById('feed-scroll');
+feedEl.addEventListener('mouseenter', () => {
+  feedHovered = true;
+  document.getElementById('feed-paused').style.display = 'inline';
+});
+feedEl.addEventListener('mouseleave', () => {
+  feedHovered = false;
+  document.getElementById('feed-paused').style.display = 'none';
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Refresh dot indicator
+// ═══════════════════════════════════════════════════════════════════════
+function setRefreshing(on) {
+  document.getElementById('refresh-dot').classList.toggle('active', on);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Main refresh loops
+// ═══════════════════════════════════════════════════════════════════════
+async function refreshFast() {   // every 5s: stats + feed + sidebar
+  setRefreshing(true);
+  await Promise.all([refreshStats(), refreshFeed(), refreshThreads()]);
+  setRefreshing(false);
+}
+
+async function refreshSlow() {   // every 10s: map + heatmap
+  await Promise.all([refreshMapIncidents(), refreshHeatmap()]);
+}
+
+// Initial load
+refreshFast();
+refreshSlow();
+
+// Timers
+setInterval(refreshFast, 5_000);
+setInterval(refreshSlow, 10_000);
 </script>
 </body>
 </html>
