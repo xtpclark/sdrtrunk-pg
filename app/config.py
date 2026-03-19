@@ -24,6 +24,13 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
+# Google Gemini — preferred embedding + entity provider
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Embedding/entity provider: gemini | openai | local
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini")
+ENTITY_PROVIDER    = os.getenv("ENTITY_PROVIDER", "gemini")
+
 # Alert webhook — POST alerts here (e.g. OpenClaw webhook URL)
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
 

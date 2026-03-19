@@ -54,7 +54,9 @@ def receive_call():
         radio_id  = str(request.form.get("src", "0"))
         ts_unix   = int(request.form.get("ts", 0))
         duration  = float(request.form.get("callDuration", 0))
-        freq_hz   = int(request.form.get("freq", 0))
+        freq_raw  = float(request.form.get("freq", 0))
+        # SDRTrunk sends freq in MHz (e.g. 856.6375), convert to Hz
+        freq_hz   = int(freq_raw * 1_000_000) if freq_raw < 10_000 else int(freq_raw)
     except (ValueError, TypeError) as exc:
         log.error("Bad form fields: %s", exc)
         return jsonify({"error": "bad request", "detail": str(exc)}), 400
@@ -66,29 +68,13 @@ def receive_call():
         # Fall back to server time
         ts_unix = int(datetime.now(tz=timezone.utc).timestamp())
 
-    # --- Locate the MP3 attachment ---
-    audio_file = (
-        request.files.get("audio")
-        or request.files.get("call")
-        or (list(request.files.values())[0] if request.files else None)
-    )
-    if audio_file is None:
-        log.error("No audio file in POST for tg=%d", tg)
-        return jsonify({"error": "no audio"}), 400
-
-    # --- Save to disk ---
+    # --- Build file path and insert into DB ---
+    # Broadcastify uses a two-step protocol:
+    # Step 1: POST metadata → we return "0 <upload_url>"
+    # Step 2: SDRTrunk PUTs the MP3 to that URL
     ts = datetime.fromtimestamp(ts_unix, tz=timezone.utc)
     file_path = _build_path(ts, tg, radio_id)
 
-    try:
-        audio_file.save(str(file_path))
-        file_size = file_path.stat().st_size
-        log.info("Saved call tg=%d ts=%s size=%d path=%s", tg, ts.isoformat(), file_size, file_path)
-    except Exception as exc:
-        log.error("Failed to save MP3: %s", exc)
-        return jsonify({"error": "storage error"}), 500
-
-    # --- Insert into DB and NOTIFY workers ---
     try:
         with db() as conn:
             cur = conn.cursor()
@@ -102,13 +88,50 @@ def receive_call():
             )
             row = cur.fetchone()
             call_id = row["id"]
-
-            # Signal transcription worker
-            cur.execute("SELECT pg_notify('new_call', %s)", (str(call_id),))
-
     except Exception as exc:
-        log.error("DB insert/notify failed for tg=%d: %s", tg, exc)
+        log.error("DB insert failed for tg=%d: %s", tg, exc)
         return jsonify({"error": "db error"}), 500
 
-    log.info("Inserted call id=%d tg=%d duration=%.1fs", call_id, tg, duration)
-    return jsonify({"status": "ok", "id": call_id}), 200
+    log.info("Registered call id=%d tg=%d duration=%.1fs — awaiting audio upload", call_id, tg, duration)
+
+    # Return upload URL per Broadcastify two-step protocol
+    upload_url = f"http://localhost:5010/api/call/upload/{call_id}"
+    return f"0 {upload_url}", 200
+
+
+@bp.route("/api/call/upload/<int:call_id>", methods=["PUT"])
+def receive_audio(call_id):
+    """Step 2: receive the MP3 PUT from SDRTrunk."""
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT file_path, tg FROM calls WHERE id = %s", (call_id,))
+            row = cur.fetchone()
+    except Exception as exc:
+        log.error("DB lookup failed for call_id=%d: %s", call_id, exc)
+        return "ERROR db", 500
+
+    if not row:
+        return "ERROR not found", 404
+
+    file_path = Path(row["file_path"])
+    tg = row["tg"]
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        file_path.write_bytes(request.get_data())
+        file_size = file_path.stat().st_size
+        log.info("Saved audio call_id=%d tg=%d size=%d path=%s", call_id, tg, file_size, file_path)
+    except Exception as exc:
+        log.error("Failed to save MP3 for call_id=%d: %s", call_id, exc)
+        return "ERROR storage", 500
+
+    # Signal transcription worker
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT pg_notify('new_call', %s)", (str(call_id),))
+    except Exception as exc:
+        log.warning("NOTIFY failed for call_id=%d: %s", call_id, exc)
+
+    return "OK", 200

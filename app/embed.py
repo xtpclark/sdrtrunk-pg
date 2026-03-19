@@ -3,9 +3,19 @@ Embedding + entity extraction worker.
 
 Listens on PostgreSQL 'transcribed_call' NOTIFY channel.
 For each notification:
-  1. Generates an OpenAI text embedding and stores it in calls.embedding
+  1. Generates an embedding using the configured provider and stores it in calls.embedding
   2. Runs an LLM prompt to extract addresses, units, and codes from the
      transcript and stores them in call_entities.
+
+Embedding providers (EMBEDDING_PROVIDER in .env):
+  - gemini    : Google Gemini embedding-001 (default, free tier, recommended)
+  - openai    : OpenAI text-embedding-3-small
+  - local     : sentence-transformers all-MiniLM-L6-v2 (fully offline)
+
+Entity extraction providers (ENTITY_PROVIDER in .env):
+  - gemini    : Gemini Flash (default)
+  - openai    : GPT-4o-mini
+  - none      : skip entity extraction
 
 Run standalone:
     python -m app.embed
@@ -18,71 +28,125 @@ import select
 import psycopg2
 import psycopg2.extensions
 
-from app.config import DATABASE_URL, OPENAI_API_KEY, EMBEDDING_MODEL
+from app.config import (
+    DATABASE_URL,
+    OPENAI_API_KEY,
+    EMBEDDING_MODEL,
+    GEMINI_API_KEY,
+)
 from app.db import db
 
 log = logging.getLogger(__name__)
 
-
-def _openai_client():
-    """Return an OpenAI client, lazily importing and configuring it."""
-    import openai  # lazy import
-
-    openai.api_key = OPENAI_API_KEY
-    return openai
-
-
 # -----------------------------------------------------------------------
-# Embedding
+# Config helpers — read from env with sensible defaults
 # -----------------------------------------------------------------------
 
-def embed_call(call_id: int):
-    """
-    Fetch the transcript for call_id, generate an embedding via OpenAI,
-    and UPDATE calls.embedding.
-    """
-    if not OPENAI_API_KEY:
-        log.warning("OPENAI_API_KEY not set — skipping embed for call %d", call_id)
-        return
+import os
 
-    with db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT transcript FROM calls WHERE id = %s", (call_id,))
-        row = cur.fetchone()
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").lower()
+ENTITY_PROVIDER    = os.getenv("ENTITY_PROVIDER", "gemini").lower()
 
-    if not row or not row["transcript"]:
-        log.info("embed_call: call %d has no transcript, skipping", call_id)
-        return
+# Gemini embedding model
+GEMINI_EMBED_MODEL  = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
+# Gemini chat model for entity extraction
+GEMINI_ENTITY_MODEL = os.getenv("GEMINI_ENTITY_MODEL", "gemini-2.0-flash")
 
-    transcript = row["transcript"].strip()
+# Local sentence-transformers model
+LOCAL_EMBED_MODEL   = os.getenv("LOCAL_EMBED_MODEL", "all-MiniLM-L6-v2")
+
+# -----------------------------------------------------------------------
+# Embedding implementations
+# -----------------------------------------------------------------------
+
+_gemini_client = None
+_local_model   = None
+_openai_client = None
+
+
+def _get_gemini():
+    global _gemini_client
+    if _gemini_client is None:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        _gemini_client = genai
+    return _gemini_client
+
+
+def _get_local_model():
+    global _local_model
+    if _local_model is None:
+        from sentence_transformers import SentenceTransformer
+        log.info("Loading local embedding model: %s", LOCAL_EMBED_MODEL)
+        _local_model = SentenceTransformer(LOCAL_EMBED_MODEL)
+        log.info("Local embedding model loaded")
+    return _local_model
+
+
+def _get_openai():
+    global _openai_client
+    if _openai_client is None:
+        import openai
+        openai.api_key = OPENAI_API_KEY
+        _openai_client = openai
+    return _openai_client
+
+
+def _embed_gemini(text: str) -> list[float]:
+    genai = _get_gemini()
+    result = genai.embed_content(
+        model=GEMINI_EMBED_MODEL,
+        content=text,
+        output_dimensionality=1536,  # match pgvector schema
+    )
+    return result["embedding"]
+
+
+def _embed_openai(text: str) -> list[float]:
+    openai = _get_openai()
+    response = openai.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    return response.data[0].embedding
+
+
+def _embed_local(text: str) -> list[float]:
+    model = _get_local_model()
+    vec = model.encode(text, normalize_embeddings=True)
+    return vec.tolist()
+
+
+def get_embedding(text: str) -> list[float] | None:
+    """Generate an embedding using the configured provider."""
+    provider = EMBEDDING_PROVIDER
 
     try:
-        openai = _openai_client()
-        response = openai.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=transcript,
-        )
-        embedding = response.data[0].embedding  # list of floats
+        if provider == "gemini":
+            if not GEMINI_API_KEY:
+                log.warning("GEMINI_API_KEY not set — skipping embedding")
+                return None
+            return _embed_gemini(text)
+
+        elif provider == "openai":
+            if not OPENAI_API_KEY:
+                log.warning("OPENAI_API_KEY not set — skipping embedding")
+                return None
+            return _embed_openai(text)
+
+        elif provider == "local":
+            return _embed_local(text)
+
+        else:
+            log.error("Unknown EMBEDDING_PROVIDER: %s", provider)
+            return None
+
     except Exception as exc:
-        log.error("OpenAI embedding failed for call %d: %s", call_id, exc)
-        return
-
-    # pgvector expects a string like '[0.1, 0.2, ...]'
-    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
-
-    with db() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE calls
-            SET embedding   = %s::vector,
-                embedded_at = now()
-            WHERE id = %s
-            """,
-            (vec_str, call_id),
-        )
-
-    log.info("Embedded call %d (%d dims)", call_id, len(embedding))
+        log.error("Embedding failed (%s): %s — trying local fallback", provider, exc)
+        # Fallback to local if available
+        if provider != "local":
+            try:
+                return _embed_local(text)
+            except Exception as exc2:
+                log.error("Local fallback also failed: %s", exc2)
+        return None
 
 
 # -----------------------------------------------------------------------
@@ -95,7 +159,7 @@ You are a dispatcher radio transcript analyzer. Extract entities from the transc
 Return ONLY a JSON array. Each item must have:
   - "entity_type": one of "address", "unit", "code", "location"
   - "value": the extracted text exactly as spoken
-  - "confidence": float 0.0–1.0
+  - "confidence": float 0.0-1.0
 
 Rules:
 - "address": street addresses, intersections, cross-streets (e.g. "100 Main Street", "Main and Elm")
@@ -110,82 +174,133 @@ Transcript:
 """
 
 
-def extract_entities(call_id: int):
-    """
-    Run LLM entity extraction on the transcript and INSERT into call_entities.
-    """
-    if not OPENAI_API_KEY:
-        log.warning("OPENAI_API_KEY not set — skipping entity extraction for call %d", call_id)
-        return
+def _entity_gemini(transcript: str) -> list[dict]:
+    genai = _get_gemini()
+    model = genai.GenerativeModel(GEMINI_ENTITY_MODEL)
+    response = model.generate_content(
+        ENTITY_PROMPT.format(transcript=transcript),
+        generation_config={"temperature": 0, "max_output_tokens": 500},
+    )
+    raw = response.text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw)
 
+
+def _entity_openai(transcript: str) -> list[dict]:
+    openai = _get_openai()
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": ENTITY_PROMPT.format(transcript=transcript)}],
+        temperature=0,
+        max_tokens=500,
+    )
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw)
+
+
+def get_entities(transcript: str) -> list[dict]:
+    """Extract entities using the configured provider."""
+    provider = ENTITY_PROVIDER
+    if provider == "none":
+        return []
+
+    try:
+        if provider == "gemini":
+            if not GEMINI_API_KEY:
+                log.warning("GEMINI_API_KEY not set — skipping entity extraction")
+                return []
+            return _entity_gemini(transcript)
+        elif provider == "openai":
+            if not OPENAI_API_KEY:
+                log.warning("OPENAI_API_KEY not set — skipping entity extraction")
+                return []
+            return _entity_openai(transcript)
+        else:
+            log.error("Unknown ENTITY_PROVIDER: %s", provider)
+            return []
+    except Exception as exc:
+        log.error("Entity extraction failed (%s): %s", provider, exc)
+        return []
+
+
+# -----------------------------------------------------------------------
+# Public pipeline functions
+# -----------------------------------------------------------------------
+
+def embed_call(call_id: int):
+    """Fetch transcript, generate embedding, store in DB."""
     with db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT transcript FROM calls WHERE id = %s", (call_id,))
         row = cur.fetchone()
 
     if not row or not row["transcript"]:
-        log.info("extract_entities: call %d has no transcript, skipping", call_id)
+        log.info("embed_call: call %d has no transcript, skipping", call_id)
+        return
+
+    transcript = row["transcript"].strip()
+    embedding = get_embedding(transcript)
+    if embedding is None:
+        return
+
+    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE calls SET embedding = %s::vector, embedded_at = now() WHERE id = %s",
+            (vec_str, call_id),
+        )
+
+    log.info("Embedded call %d via %s (%d dims)", call_id, EMBEDDING_PROVIDER, len(embedding))
+
+
+def extract_entities(call_id: int):
+    """Run entity extraction on transcript, insert into call_entities."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT transcript FROM calls WHERE id = %s", (call_id,))
+        row = cur.fetchone()
+
+    if not row or not row["transcript"]:
         return
 
     transcript = row["transcript"].strip()
     if len(transcript) < 5:
         return
 
-    prompt = ENTITY_PROMPT.format(transcript=transcript)
-
-    try:
-        openai = _openai_client()
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=500,
-        )
-        raw = response.choices[0].message.content.strip()
-    except Exception as exc:
-        log.error("OpenAI chat failed for call %d: %s", call_id, exc)
-        return
-
-    # Parse JSON response
-    try:
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        entities = json.loads(raw)
-        if not isinstance(entities, list):
-            raise ValueError(f"Expected list, got {type(entities)}")
-    except (json.JSONDecodeError, ValueError) as exc:
-        log.error("Failed to parse entity JSON for call %d: %s — raw: %r", call_id, exc, raw[:200])
-        return
-
+    entities = get_entities(transcript)
     if not entities:
-        log.info("extract_entities: no entities found for call %d", call_id)
+        log.info("extract_entities: no entities for call %d", call_id)
         return
 
-    # Insert into call_entities
     with db() as conn:
         cur = conn.cursor()
         for ent in entities:
             entity_type = ent.get("entity_type", "unknown")
             value       = ent.get("value", "")
-            confidence  = ent.get("confidence", 0.0)
-
+            confidence  = float(ent.get("confidence", 0.0))
             if not value:
                 continue
-
             cur.execute(
                 """
                 INSERT INTO call_entities (call_id, entity_type, value, confidence)
                 VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 """,
                 (call_id, entity_type, value, confidence),
             )
 
-    log.info("Extracted %d entities for call %d", len(entities), call_id)
+    log.info("Extracted %d entities for call %d via %s", len(entities), call_id, ENTITY_PROVIDER)
 
-    # Trigger geocoding for address entities (deferred to geocode module)
+    # Trigger geocoding for address entities
     from app.geocode import geocode_call_entities
     try:
         geocode_call_entities(call_id)
@@ -198,14 +313,11 @@ def extract_entities(call_id: int):
 # -----------------------------------------------------------------------
 
 def listen_for_transcriptions():
-    """
-    LISTEN on 'transcribed_call' and run embed + extract for each call.
-    """
-    log.info("Embedding worker starting. Connecting to DB…")
+    log.info("Embedding worker starting (provider=%s, entity=%s)",
+             EMBEDDING_PROVIDER, ENTITY_PROVIDER)
 
     conn = psycopg2.connect(DATABASE_URL)
     conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-
     cur = conn.cursor()
     cur.execute("LISTEN transcribed_call;")
     log.info("Listening on 'transcribed_call'…")
@@ -218,7 +330,6 @@ def listen_for_transcriptions():
                     notify = conn.notifies.pop(0)
                     call_id_str = notify.payload.strip()
                     if not call_id_str.isdigit():
-                        log.warning("Unexpected notify payload: %r", call_id_str)
                         continue
                     call_id = int(call_id_str)
                     log.info("Received transcribed_call notify: call_id=%d", call_id)
