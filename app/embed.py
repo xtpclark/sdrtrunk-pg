@@ -250,11 +250,12 @@ def embed_call(call_id: int):
         return
 
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    dims = len(embedding)
 
     with db() as conn:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE calls SET embedding = %s::vector, embedded_at = now() WHERE id = %s",
+            f"UPDATE calls SET embedding = %s::vector({dims}), embedded_at = now() WHERE id = %s",
             (vec_str, call_id),
         )
 
