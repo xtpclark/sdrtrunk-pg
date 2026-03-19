@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SDRTrunk Live Map — Hampton Roads</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Stats bar ── */
+    #stats-bar {
+      display: flex;
+      gap: 24px;
+      align-items: center;
+      padding: 8px 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+
+    #stats-bar h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #4cc9f0;
+      margin-right: 8px;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f0f0f0;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      color: #888;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-divider {
+      width: 1px;
+      height: 32px;
+      background: #0f3460;
+    }
+
+    #last-call-time {
+      margin-left: auto;
+      font-size: 12px;
+      color: #888;
+    }
+
+    #refresh-indicator {
+      font-size: 11px;
+      color: #666;
+    }
+
+    /* ── Alert banner ── */
+    #alert-bar {
+      display: none;
+      background: #c0392b;
+      color: #fff;
+      padding: 6px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    #alert-bar:hover { background: #e74c3c; }
+
+    /* ── Map ── */
+    #map {
+      flex: 1;
+    }
+
+    /* ── Legend ── */
+    .legend {
+      background: rgba(22, 33, 62, 0.92);
+      border: 1px solid #0f3460;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.8;
+    }
+
+    .legend h4 {
+      margin-bottom: 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #888;
+      letter-spacing: 0.5px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.4);
+    }
+
+    /* ── Call popup ── */
+    .leaflet-popup-content-wrapper {
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+    }
+
+    .leaflet-popup-tip {
+      background: #16213e;
+    }
+
+    .popup-header {
+      font-weight: 600;
+      font-size: 14px;
+      color: #4cc9f0;
+      margin-bottom: 6px;
+    }
+
+    .popup-meta {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .popup-transcript {
+      font-size: 12px;
+      font-style: italic;
+      color: #bbb;
+      background: rgba(0,0,0,0.2);
+      padding: 6px 8px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+
+    .popup-audio audio {
+      width: 100%;
+      height: 28px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-police { background: #1565c0; color: #fff; }
+    .badge-fire   { background: #b71c1c; color: #fff; }
+    .badge-ems    { background: #e65100; color: #fff; }
+    .badge-other  { background: #424242; color: #ccc; }
+  </style>
+</head>
+<body>
+
+<!-- Stats bar -->
+<div id="stats-bar">
+  <h1>📡 SDRTrunk Live</h1>
+  <div class="stat-divider"></div>
+  <div class="stat-item">
+    <span class="stat-value" id="calls-today">—</span>
+    <span class="stat-label">Calls Today</span>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat-item">
+    <span class="stat-value" id="active-tgs">—</span>
+    <span class="stat-label">Active TGs (1h)</span>
+  </div>
+  <div class="stat-divider"></div>
+  <span id="last-call-time">Last call: —</span>
+  <span id="refresh-indicator">● refreshing</span>
+</div>
+
+<!-- Alert banner (shown when recent alerts exist) -->
+<div id="alert-bar" onclick="document.getElementById('alert-bar').style.display='none'">
+  ⚠ <span id="alert-text"></span> &nbsp;·&nbsp; click to dismiss
+</div>
+
+<!-- Map -->
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Leaflet.heat -->
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+<script>
+  // ── Map init ──────────────────────────────────────────────────────────
+  const NORFOLK = [36.8508, -76.2859];
+
+  const map = L.map('map', {
+    center: NORFOLK,
+    zoom: 12,
+    preferCanvas: true,
+  });
+
+  // Dark tile layer (CartoDB Dark Matter)
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // ── Category colours ─────────────────────────────────────────────────
+  const CATEGORY_COLORS = {
+    'Police':   '#2196f3',
+    'Fire':     '#f44336',
+    'EMS':      '#ff9800',
+    'Other':    '#9e9e9e',
+  };
+
+  function categoryColor(cat) {
+    if (!cat) return CATEGORY_COLORS['Other'];
+    const key = Object.keys(CATEGORY_COLORS).find(k =>
+      cat.toLowerCase().includes(k.toLowerCase())
+    );
+    return key ? CATEGORY_COLORS[key] : CATEGORY_COLORS['Other'];
+  }
+
+  function categoryBadge(cat) {
+    if (!cat) return '<span class="badge badge-other">Other</span>';
+    if (cat.toLowerCase().includes('police')) return `<span class="badge badge-police">${cat}</span>`;
+    if (cat.toLowerCase().includes('fire'))   return `<span class="badge badge-fire">${cat}</span>`;
+    if (cat.toLowerCase().includes('ems'))    return `<span class="badge badge-ems">${cat}</span>`;
+    return `<span class="badge badge-other">${cat}</span>`;
+  }
+
+  function makeIcon(color) {
+    return L.divIcon({
+      className: '',
+      html: `<div style="
+        width:14px;height:14px;
+        border-radius:50%;
+        background:${color};
+        border:2px solid rgba(255,255,255,0.6);
+        box-shadow:0 0 6px ${color}88;
+      "></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+      popupAnchor: [0, -10],
+    });
+  }
+
+  // ── Legend ────────────────────────────────────────────────────────────
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = () => {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Category</h4>
+      ${Object.entries(CATEGORY_COLORS).map(([k,v]) =>
+        `<div class="legend-item">
+          <div class="legend-dot" style="background:${v};border-color:${v}88"></div>
+          <span>${k}</span>
+        </div>`
+      ).join('')}
+      <div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">
+        <h4>Heatmap</h4>
+        <div style="font-size:11px;color:#888">Geocoded entities<br>last 60 min</div>
+      </div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // ── Layers ────────────────────────────────────────────────────────────
+  let heatLayer = L.heatLayer([], {
+    radius: 25,
+    blur: 20,
+    maxZoom: 17,
+    gradient: { 0.2: '#1a237e', 0.4: '#0d47a1', 0.6: '#ff6f00', 0.8: '#e65100', 1.0: '#b71c1c' },
+  }).addTo(map);
+
+  const incidentLayer = L.layerGroup().addTo(map);
+
+  // Layer controls
+  const overlays = {
+    'Heatmap':   heatLayer,
+    'Incidents': incidentLayer,
+  };
+  L.control.layers(null, overlays, { position: 'topright', collapsed: false }).addTo(map);
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+  function fmt(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function fmtFull(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  // ── Refresh heatmap ───────────────────────────────────────────────────
+  async function refreshHeatmap() {
+    try {
+      const resp = await fetch('/map/heatmap?minutes=60');
+      const geo  = await resp.json();
+      const pts  = geo.features.map(f => [
+        f.geometry.coordinates[1],  // lat
+        f.geometry.coordinates[0],  // lon
+        f.properties.weight || 1,
+      ]);
+      heatLayer.setLatLngs(pts);
+    } catch (e) {
+      console.warn('heatmap refresh failed:', e);
+    }
+  }
+
+  // ── Refresh incidents ─────────────────────────────────────────────────
+  async function refreshIncidents() {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const resp  = await fetch(`/map/incidents?date=${today}`);
+      const geo   = await resp.json();
+
+      incidentLayer.clearLayers();
+
+      for (const f of geo.features) {
+        if (!f.geometry) continue;  // no location
+
+        const p    = f.properties;
+        const latlng = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+        const color  = categoryColor(p.category);
+        const icon   = makeIcon(color);
+
+        const transcript = p.transcript
+          ? `<div class="popup-transcript">"${p.transcript}"</div>`
+          : '';
+
+        const popup = `
+          <div class="popup-header">${p.alpha_tag || 'TG ' + p.tg}</div>
+          <div class="popup-meta">
+            ${categoryBadge(p.category)}
+            &nbsp; ${fmtFull(p.ts)}
+            &nbsp; · &nbsp; ${p.duration ? p.duration.toFixed(1) + 's' : '—'}
+          </div>
+          ${transcript}
+          <div class="popup-audio">
+            <audio controls preload="none">
+              <source src="/api/calls/${p.id}/audio" type="audio/mpeg" />
+            </audio>
+          </div>
+        `;
+
+        L.marker(latlng, { icon })
+          .bindPopup(popup, { maxWidth: 280 })
+          .addTo(incidentLayer);
+      }
+    } catch (e) {
+      console.warn('incidents refresh failed:', e);
+    }
+  }
+
+  // ── Refresh stats ─────────────────────────────────────────────────────
+  async function refreshStats() {
+    try {
+      const resp  = await fetch('/map/stats');
+      const stats = await resp.json();
+
+      document.getElementById('calls-today').textContent = stats.calls_today ?? '—';
+      document.getElementById('active-tgs').textContent  = stats.active_talkgroups ?? '—';
+      document.getElementById('last-call-time').textContent =
+        'Last call: ' + fmt(stats.last_call_ts);
+
+      // Show alert banner if recent alerts
+      if (stats.recent_alerts && stats.recent_alerts.length > 0) {
+        const latest = stats.recent_alerts[0];
+        document.getElementById('alert-text').textContent = latest.message;
+        document.getElementById('alert-bar').style.display = 'block';
+      }
+    } catch (e) {
+      console.warn('stats refresh failed:', e);
+    }
+  }
+
+  // ── Refresh indicator ─────────────────────────────────────────────────
+  let refreshActive = false;
+  function setRefreshing(active) {
+    const el = document.getElementById('refresh-indicator');
+    if (active) {
+      el.style.color = '#4cc9f0';
+      el.textContent = '● refreshing';
+    } else {
+      el.style.color = '#555';
+      el.textContent = '○ idle';
+    }
+  }
+
+  // ── Main refresh cycle ────────────────────────────────────────────────
+  async function refresh() {
+    setRefreshing(true);
+    await Promise.all([
+      refreshHeatmap(),
+      refreshIncidents(),
+      refreshStats(),
+    ]);
+    setRefreshing(false);
+  }
+
+  // Initial load + 30-second auto-refresh
+  refresh();
+  setInterval(refresh, 30_000);
+</script>
+</body>
+</html>
