@@ -67,9 +67,8 @@ _openai_client = None
 def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_client = genai
+        from google import genai
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     return _gemini_client
 
 
@@ -93,13 +92,13 @@ def _get_openai():
 
 
 def _embed_gemini(text: str) -> list[float]:
-    genai = _get_gemini()
-    result = genai.embed_content(
+    client = _get_gemini()
+    result = client.models.embed_content(
         model=GEMINI_EMBED_MODEL,
-        content=text,
-        output_dimensionality=1536,  # match pgvector schema
+        contents=text,
+        config={"output_dimensionality": 1536},
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 
 def _embed_openai(text: str) -> list[float]:
@@ -175,11 +174,11 @@ Transcript:
 
 
 def _entity_gemini(transcript: str) -> list[dict]:
-    genai = _get_gemini()
-    model = genai.GenerativeModel(GEMINI_ENTITY_MODEL)
-    response = model.generate_content(
-        ENTITY_PROMPT.format(transcript=transcript),
-        generation_config={"temperature": 0, "max_output_tokens": 500},
+    client = _get_gemini()
+    response = client.models.generate_content(
+        model=GEMINI_ENTITY_MODEL,
+        contents=ENTITY_PROMPT.format(transcript=transcript),
+        config={"temperature": 0, "max_output_tokens": 500},
     )
     raw = response.text.strip()
     if raw.startswith("```"):
