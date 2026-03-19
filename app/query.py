@@ -427,3 +427,78 @@ def stats():
             "calls_per_hour_today": calls_per_hour_today,
         }
     )
+
+
+@bp.route("/api/calls/search", methods=["GET"])
+def semantic_search():
+    """
+    Semantic similarity search over call transcripts.
+
+    GET /api/calls/search?q=structure+fire+on+main+street&limit=10&category=Fire/EMS
+
+    Returns calls ranked by embedding similarity to the query.
+    Falls back to keyword search if no embeddings available.
+    """
+    from app.embed import get_embedding
+
+    q       = request.args.get("q", "").strip()
+    limit   = min(int(request.args.get("limit", 10)), 50)
+    category = request.args.get("category", "")
+
+    if not q:
+        return jsonify({"error": "q parameter required"}), 400
+
+    # Try semantic search first
+    embedding = get_embedding(q)
+
+    if embedding:
+        vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+        with db() as conn:
+            cur = conn.cursor()
+            cat_filter = "AND t.category = %(cat)s" if category else ""
+            cur.execute(f"""
+                SELECT c.id, c.tg, t.alpha_tag, t.category, t.system_id,
+                       c.radio_id, c.ts, c.duration_sec, c.transcript,
+                       c.file_path,
+                       1 - (c.embedding <=> %(vec)s::vector) AS similarity
+                FROM calls c
+                LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+                WHERE c.embedding IS NOT NULL
+                  AND c.transcript IS NOT NULL
+                  AND c.transcript != ''
+                  {cat_filter}
+                ORDER BY c.embedding <=> %(vec)s::vector
+                LIMIT %(limit)s
+            """, {"vec": vec_str, "cat": category, "limit": limit})
+            results = [dict(r) for r in cur.fetchall()]
+
+        return jsonify({
+            "query": q,
+            "mode": "semantic",
+            "count": len(results),
+            "results": results
+        })
+
+    # Fallback: keyword search
+    with db() as conn:
+        cur = conn.cursor()
+        cat_filter = "AND t.category = %(cat)s" if category else ""
+        cur.execute(f"""
+            SELECT c.id, c.tg, t.alpha_tag, t.category, t.system_id,
+                   c.radio_id, c.ts, c.duration_sec, c.transcript, c.file_path,
+                   1.0 AS similarity
+            FROM calls c
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            WHERE c.transcript ILIKE %(q)s
+              {cat_filter}
+            ORDER BY c.ts DESC
+            LIMIT %(limit)s
+        """, {"q": f"%{q}%", "cat": category, "limit": limit})
+        results = [dict(r) for r in cur.fetchall()]
+
+    return jsonify({
+        "query": q,
+        "mode": "keyword_fallback",
+        "count": len(results),
+        "results": results
+    })
