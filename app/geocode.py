@@ -1,13 +1,19 @@
 """
-Nominatim geocoder with Hampton Roads viewbox bias.
+Nominatim geocoder with Hampton Roads bounding box enforcement.
 
 Rate-limited to 1 req/sec per Nominatim ToS.
 In-memory address cache to avoid re-querying the same string.
 
+Changes from v1:
+- Only geocodes 'address' entities (not 'location' — too ambiguous)
+- Appends ", Norfolk, VA" context to improve disambiguation
+- bounded=1 forces results inside Hampton Roads bbox
+- countrycodes=us to prevent overseas matches
+- Validates result is actually inside Hampton Roads bbox
+
 Usage:
     from app.geocode import geocode, geocode_call_entities
-
-    lat, lon = geocode("100 Main Street, Norfolk VA") or (None, None)
+    lat, lon = geocode("100 Main Street") or (None, None)
     geocode_call_entities(call_id)
 """
 
@@ -22,16 +28,26 @@ from app.db import db
 
 log = logging.getLogger(__name__)
 
-# In-memory cache: address_string → (lat, lon) or None
+# Hampton Roads bounding box: sw_lon, sw_lat, ne_lon, ne_lat
+_BBOX_SW_LON = -76.9
+_BBOX_SW_LAT = 36.5
+_BBOX_NE_LON = -75.9
+_BBOX_NE_LAT = 37.3
+
+# Nominatim viewbox format: left,top,right,bottom (lon_min, lat_max, lon_max, lat_min)
+_VIEWBOX = f"{_BBOX_SW_LON},{_BBOX_NE_LAT},{_BBOX_NE_LON},{_BBOX_SW_LAT}"
+
+# City context appended to improve disambiguation
+_CITY_CONTEXT = "Norfolk, VA"
+
+# In-memory cache: normalized_address → (lat, lon) or None
 _cache: dict[str, Optional[Tuple[float, float]]] = {}
 
-# Rate limiter state
 _last_request_time: float = 0.0
-_MIN_INTERVAL_SEC: float = 1.0  # Nominatim ToS: max 1 req/sec
+_MIN_INTERVAL_SEC: float = 1.1  # slightly over 1s to be safe
 
 
 def _rate_limit():
-    """Sleep if needed to honour 1 req/sec limit."""
     global _last_request_time
     elapsed = time.monotonic() - _last_request_time
     if elapsed < _MIN_INTERVAL_SEC:
@@ -39,43 +55,42 @@ def _rate_limit():
     _last_request_time = time.monotonic()
 
 
-def geocode(address: str) -> Optional[Tuple[float, float]]:
-    """
-    Geocode address string with Hampton Roads viewbox bias.
+def _in_hampton_roads(lat: float, lon: float) -> bool:
+    """Validate result is inside Hampton Roads bounding box."""
+    return (_BBOX_SW_LAT <= lat <= _BBOX_NE_LAT and
+            _BBOX_SW_LON <= lon <= _BBOX_NE_LON)
 
-    Returns (lat, lon) tuple or None if not found / on error.
-    Results are cached in-process.
+
+def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, float]]:
     """
-    key = address.strip().lower()
-    if not key:
+    Geocode an address string, biased and bounded to Hampton Roads.
+
+    Returns (lat, lon) or None. Results are cached in-process.
+    """
+    address = address.strip()
+    if not address or len(address) < 4:
         return None
 
-    if key in _cache:
-        return _cache[key]
+    # Append city context for disambiguation
+    query = f"{address}, {_CITY_CONTEXT}" if city_context else address
+
+    cache_key = query.lower()
+    if cache_key in _cache:
+        return _cache[cache_key]
 
     _rate_limit()
 
-    # Parse viewbox: "-76.5,36.5,-75.9,37.2" → "left,top,right,bottom" for Nominatim
-    # Nominatim viewbox format: left,top,right,bottom  (lon_min, lat_max, lon_max, lat_min)
-    try:
-        parts = [float(x) for x in NOMINATIM_VIEWBOX.split(",")]
-        # Our env: sw_lon, sw_lat, ne_lon, ne_lat
-        sw_lon, sw_lat, ne_lon, ne_lat = parts
-        viewbox = f"{sw_lon},{ne_lat},{ne_lon},{sw_lat}"
-    except Exception:
-        viewbox = None
-
     params = {
-        "q": address,
+        "q": query,
         "format": "json",
-        "limit": 1,
+        "limit": 3,          # get a few candidates so we can pick the best
         "addressdetails": 0,
+        "countrycodes": "us",
+        "viewbox": _VIEWBOX,
+        "bounded": 1,        # ONLY return results inside the viewbox
     }
-    if viewbox:
-        params["viewbox"] = viewbox
-        params["bounded"] = 0  # prefer viewbox but fall back to global
 
-    headers = {"User-Agent": "sdrtrunk-pg/1.0 (scanner radio transcription)"}
+    headers = {"User-Agent": "sdrtrunk-pg/1.0 scanner-radio-transcription"}
 
     try:
         resp = requests.get(
@@ -88,40 +103,55 @@ def geocode(address: str) -> Optional[Tuple[float, float]]:
         results = resp.json()
     except Exception as exc:
         log.error("Nominatim request failed for %r: %s", address, exc)
-        _cache[key] = None
+        _cache[cache_key] = None
         return None
 
     if not results:
-        log.debug("Nominatim: no results for %r", address)
-        _cache[key] = None
-        return None
+        # Try again without bounded — sometimes the bbox is too tight
+        # for cross-street or named location queries
+        params["bounded"] = 0
+        try:
+            resp = requests.get(
+                f"{NOMINATIM_URL}/search",
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+            results = resp.json()
+        except Exception:
+            pass
 
-    try:
-        lat = float(results[0]["lat"])
-        lon = float(results[0]["lon"])
-    except (KeyError, ValueError, IndexError) as exc:
-        log.error("Nominatim bad response for %r: %s", address, exc)
-        _cache[key] = None
-        return None
+    # Find first result inside Hampton Roads
+    for r in results:
+        try:
+            lat = float(r["lat"])
+            lon = float(r["lon"])
+            if _in_hampton_roads(lat, lon):
+                log.info("Geocoded %r → (%.5f, %.5f)", address, lat, lon)
+                _cache[cache_key] = (lat, lon)
+                return (lat, lon)
+        except (KeyError, ValueError):
+            continue
 
-    log.debug("Geocoded %r → (%.5f, %.5f)", address, lat, lon)
-    _cache[key] = (lat, lon)
-    return (lat, lon)
+    log.debug("Nominatim: no Hampton Roads result for %r", address)
+    _cache[cache_key] = None
+    return None
 
 
 def geocode_call_entities(call_id: int):
     """
-    Geocode all address-type entities for call_id.
-    Updates call_entities.lat, .lon, and .geom for each address found.
+    Geocode 'address' entities for a call. Skips 'location' type —
+    too ambiguous for reliable geocoding.
+    Updates call_entities.lat, .lon, .geom.
     """
     with db() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, value
+            SELECT id, value, entity_type
             FROM call_entities
             WHERE call_id = %s
-              AND entity_type IN ('address', 'location')
+              AND entity_type = 'address'
               AND lat IS NULL
             """,
             (call_id,),
@@ -136,6 +166,8 @@ def geocode_call_entities(call_id: int):
         result = geocode(ent["value"])
         if result:
             updates.append((result[0], result[1], ent["id"]))
+        else:
+            log.debug("No Hampton Roads geocode for %r (call %d)", ent["value"], call_id)
 
     if not updates:
         return
@@ -154,9 +186,5 @@ def geocode_call_entities(call_id: int):
                 (lat, lon, lon, lat, ent_id),
             )
 
-    log.info(
-        "Geocoded %d/%d entities for call %d",
-        len(updates),
-        len(entities),
-        call_id,
-    )
+    log.info("Geocoded %d/%d address entities for call %d",
+             len(updates), len(entities), call_id)
