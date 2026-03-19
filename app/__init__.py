@@ -28,11 +28,13 @@ def create_app():
     from app.query import bp as query_bp
     from app.merge import bp as merge_bp
     from app.map import bp as map_bp
+    from app.incident_routes import bp as incidents_bp
 
     app.register_blueprint(ingest_bp)
     app.register_blueprint(query_bp)
     app.register_blueprint(merge_bp)
     app.register_blueprint(map_bp)
+    app.register_blueprint(incidents_bp)
 
     # ----------------------------------------------------------------
     # Health check

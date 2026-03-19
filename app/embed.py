@@ -307,6 +307,13 @@ def extract_entities(call_id: int):
     except Exception as exc:
         log.error("Geocoding failed for call %d: %s", call_id, exc)
 
+    # Incident threading — group related calls into incidents
+    from app.incidents import process_call_for_incidents
+    try:
+        process_call_for_incidents(call_id)
+    except Exception as exc:
+        log.error("Incident processing failed for call %d: %s", call_id, exc)
+
 
 # -----------------------------------------------------------------------
 # LISTEN / NOTIFY worker

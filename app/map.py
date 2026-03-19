@@ -183,6 +183,77 @@ def incidents():
     return jsonify({"type": "FeatureCollection", "features": features})
 
 
+@bp.route("/map/incidents_geo")
+def incidents_geo():
+    """
+    GeoJSON FeatureCollection of active incidents for the incident map layer.
+
+    Query params:
+      status (default 'active') — active | closed | all
+      minutes (default 120)     — only incidents with last_activity within N minutes
+    """
+    status  = request.args.get("status", "active")
+    minutes = request.args.get("minutes", 120, type=int)
+    minutes = max(1, min(minutes, 10080))  # clamp 1 min – 1 week
+
+    conditions = ["i.location IS NOT NULL",
+                  "i.last_activity > now() - (%s || ' minutes')::interval"]
+    params = [str(minutes)]
+
+    if status != "all":
+        conditions.append("i.status = %s")
+        params.append(status)
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT
+                i.id,
+                i.address,
+                i.category,
+                i.opened_at,
+                i.last_activity,
+                i.status,
+                i.call_count,
+                i.unit_count,
+                ST_X(i.location) AS lon,
+                ST_Y(i.location) AS lat
+            FROM incidents i
+            {where}
+            ORDER BY i.last_activity DESC
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+
+    features = []
+    for r in rows:
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type":        "Point",
+                    "coordinates": [r["lon"], r["lat"]],
+                },
+                "properties": {
+                    "id":            r["id"],
+                    "address":       r["address"],
+                    "category":      r["category"],
+                    "opened_at":     r["opened_at"].isoformat() if r["opened_at"] else None,
+                    "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+                    "status":        r["status"],
+                    "call_count":    r["call_count"],
+                    "unit_count":    r["unit_count"],
+                },
+            }
+        )
+
+    return jsonify({"type": "FeatureCollection", "features": features})
+
+
 @bp.route("/map/stats")
 def map_stats():
     """

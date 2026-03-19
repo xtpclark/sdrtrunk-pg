@@ -180,6 +180,85 @@
     .badge-fire   { background: #b71c1c; color: #fff; }
     .badge-ems    { background: #e65100; color: #fff; }
     .badge-other  { background: #424242; color: #ccc; }
+
+    /* ── Incident circles ── */
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.5); }
+      70%  { box-shadow: 0 0 0 12px rgba(255,255,255,0); }
+      100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+    }
+
+    .incident-circle {
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.7);
+      opacity: 0.85;
+      cursor: pointer;
+    }
+
+    .incident-circle.active {
+      animation: pulse 2s infinite;
+    }
+
+    .incident-circle.closed {
+      opacity: 0.35;
+      filter: grayscale(80%);
+      border-color: rgba(255,255,255,0.3);
+    }
+
+    .popup-incident-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: #4cc9f0;
+      margin-bottom: 4px;
+    }
+
+    .popup-incident-meta {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .popup-incident-units {
+      font-size: 11px;
+      color: #ccc;
+      background: rgba(0,0,0,0.2);
+      padding: 4px 6px;
+      border-radius: 4px;
+      margin-bottom: 6px;
+      font-family: monospace;
+    }
+
+    .popup-incident-transcripts {
+      font-size: 11px;
+      font-style: italic;
+      color: #bbb;
+      background: rgba(0,0,0,0.15);
+      padding: 5px 8px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+
+    .popup-incident-transcripts p {
+      margin: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      padding-bottom: 2px;
+    }
+
+    .btn-play-incident {
+      display: inline-block;
+      background: #1565c0;
+      color: #fff;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .btn-play-incident:hover { background: #1976d2; }
   </style>
 </head>
 <body>
@@ -196,6 +275,11 @@
   <div class="stat-item">
     <span class="stat-value" id="active-tgs">—</span>
     <span class="stat-label">Active TGs (1h)</span>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat-item">
+    <span class="stat-value" id="active-incidents">—</span>
+    <span class="stat-label">Active Incidents</span>
   </div>
   <div class="stat-divider"></div>
   <span id="last-call-time">Last call: —</span>
@@ -285,6 +369,10 @@
         </div>`
       ).join('')}
       <div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">
+        <h4>Incidents</h4>
+        <div style="font-size:11px;color:#888">Pulsing = active<br>Gray = closed</div>
+      </div>
+      <div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">
         <h4>Heatmap</h4>
         <div style="font-size:11px;color:#888">Geocoded entities<br>last 60 min</div>
       </div>
@@ -301,12 +389,14 @@
     gradient: { 0.2: '#1a237e', 0.4: '#0d47a1', 0.6: '#ff6f00', 0.8: '#e65100', 1.0: '#b71c1c' },
   }).addTo(map);
 
-  const incidentLayer = L.layerGroup().addTo(map);
+  const incidentMarkerLayer = L.layerGroup().addTo(map);  // incident circles
+  const incidentLayer       = L.layerGroup().addTo(map);  // legacy call dots
 
   // Layer controls
   const overlays = {
-    'Heatmap':   heatLayer,
-    'Incidents': incidentLayer,
+    'Heatmap':         heatLayer,
+    'Incident Pins':   incidentMarkerLayer,
+    'Call Dots':       incidentLayer,
   };
   L.control.layers(null, overlays, { position: 'topright', collapsed: false }).addTo(map);
 
@@ -384,6 +474,155 @@
     }
   }
 
+  // ── Incident audio player ────────────────────────────────────────────
+  function playIncident(incidentId) {
+    const win = window.open('', '_blank', 'width=420,height=360,scrollbars=yes');
+    if (!win) return;
+    win.document.write(`
+      <html><head><title>Incident #${incidentId} Audio</title>
+      <style>
+        body { font-family: sans-serif; background:#111; color:#eee; padding:12px; }
+        h2   { font-size:14px; color:#4cc9f0; margin:0 0 10px; }
+        .track { border-bottom:1px solid #333; padding:6px 0; font-size:12px; }
+        .track audio { width:100%; height:26px; display:block; margin-top:4px; }
+      </style></head><body>
+      <h2>▶ Incident #${incidentId} Playlist</h2>
+      <div id="tracks">Loading…</div>
+      <script>
+        fetch('/api/incidents/${incidentId}/audio_playlist')
+          .then(r => r.json())
+          .then(data => {
+            const el = document.getElementById('tracks');
+            if (!data.tracks || !data.tracks.length) {
+              el.textContent = 'No audio available.'; return;
+            }
+            el.innerHTML = data.tracks.map((t,i) => \`
+              <div class="track">
+                <span>#\${i+1} \${t.alpha_tag || ''} \${t.radio_id || ''} — \${t.ts ? new Date(t.ts).toLocaleTimeString() : ''}</span>
+                <div style="font-size:11px;color:#888;font-style:italic">\${t.transcript || ''}</div>
+                <audio controls preload="none">
+                  <source src="\${t.audio_url}" type="audio/mpeg" />
+                </audio>
+              </div>
+            \`).join('');
+          })
+          .catch(e => { document.getElementById('tracks').textContent = 'Error: '+e; });
+      <\/script>
+      </body></html>
+    `);
+    win.document.close();
+  }
+
+  // ── Refresh incident marker layer ─────────────────────────────────────
+  async function refreshIncidentMarkers() {
+    try {
+      const resp = await fetch('/map/incidents_geo?minutes=120&status=all');
+      const geo  = await resp.json();
+
+      incidentMarkerLayer.clearLayers();
+
+      let activeCount = 0;
+
+      for (const f of geo.features) {
+        if (!f.geometry) continue;
+
+        const p      = f.properties;
+        const latlng = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+        const color  = categoryColor(p.category);
+        const isActive = p.status === 'active';
+
+        if (isActive) activeCount++;
+
+        // Radius grows with call count (min 12, max 40px)
+        const radius = Math.min(40, Math.max(12, 10 + (p.call_count || 1) * 3));
+        const cssClass = `incident-circle ${isActive ? 'active' : 'closed'}`;
+
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="${cssClass}" style="
+            width:${radius}px; height:${radius}px;
+            background:${isActive ? color : '#555'};
+          "></div>`,
+          iconSize:   [radius, radius],
+          iconAnchor: [radius/2, radius/2],
+          popupAnchor: [0, -radius/2 - 4],
+        });
+
+        // Fetch last 3 transcripts for this incident
+        const snippets = await fetchIncidentSnippets(p.id);
+
+        const unitsHtml = snippets.units && snippets.units.length
+          ? `<div class="popup-incident-units">Units: ${snippets.units.join(', ')}</div>`
+          : '';
+
+        const transcriptHtml = snippets.transcripts && snippets.transcripts.length
+          ? `<div class="popup-incident-transcripts">
+               ${snippets.transcripts.map(t => `<p>${t}</p>`).join('')}
+             </div>`
+          : '';
+
+        const popup = `
+          <div class="popup-incident-title">
+            ${isActive ? '🔴' : '⚫'} Incident #${p.id}
+          </div>
+          <div class="popup-incident-meta">
+            ${categoryBadge(p.category)}
+            &nbsp; Opened: ${fmtFull(p.opened_at)}
+          </div>
+          <div class="popup-incident-meta">
+            📍 ${p.address || 'Unknown location'}
+          </div>
+          <div class="popup-incident-meta">
+            📞 ${p.call_count} call${p.call_count !== 1 ? 's' : ''}
+            &nbsp;·&nbsp;
+            🎙 ${p.unit_count} unit${p.unit_count !== 1 ? 's' : ''}
+            &nbsp;·&nbsp;
+            ${isActive ? '<b style="color:#4caf50">ACTIVE</b>' : '<span style="color:#888">closed</span>'}
+          </div>
+          ${unitsHtml}
+          ${transcriptHtml}
+          <button class="btn-play-incident" onclick="playIncident(${p.id})">
+            ▶ Play Incident Audio
+          </button>
+        `;
+
+        L.marker(latlng, { icon })
+          .bindPopup(popup, { maxWidth: 300 })
+          .addTo(incidentMarkerLayer);
+      }
+
+      // Update stat counter
+      const el = document.getElementById('active-incidents');
+      if (el) el.textContent = activeCount;
+
+    } catch (e) {
+      console.warn('incident marker refresh failed:', e);
+    }
+  }
+
+  // Cache to avoid re-fetching same incident detail on every refresh
+  const _snippetCache = {};
+
+  async function fetchIncidentSnippets(incidentId) {
+    if (_snippetCache[incidentId]) return _snippetCache[incidentId];
+    try {
+      const resp = await fetch(`/api/incidents/${incidentId}`);
+      if (!resp.ok) return {};
+      const data = await resp.json();
+      const calls = data.calls || [];
+      const last3 = calls.slice(-3);
+      const result = {
+        units:       data.units || [],
+        transcripts: last3.map(c => c.transcript || '').filter(Boolean).map(t => t.slice(0, 100)),
+      };
+      // Only cache closed incidents (active ones may change)
+      if (data.status === 'closed') _snippetCache[incidentId] = result;
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
   // ── Refresh stats ─────────────────────────────────────────────────────
   async function refreshStats() {
     try {
@@ -425,6 +664,7 @@
     await Promise.all([
       refreshHeatmap(),
       refreshIncidents(),
+      refreshIncidentMarkers(),
       refreshStats(),
     ]);
     setRefreshing(false);

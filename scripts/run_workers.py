@@ -60,8 +60,9 @@ def start_embedding_worker():
 
 
 def start_alert_worker():
-    """Run the alert check every 60 seconds."""
+    """Run the alert check and incident closer every 60 seconds."""
     from app.alerts import run_alert_check
+    from app.incidents import close_stale_incidents
 
     def loop():
         log.info("Alert worker started (60s interval).")
@@ -70,6 +71,10 @@ def start_alert_worker():
                 run_alert_check()
             except Exception as exc:
                 log.error("Alert check error: %s", exc)
+            try:
+                close_stale_incidents()
+            except Exception as exc:
+                log.error("Incident closer error: %s", exc)
             _shutdown.wait(timeout=60)
         log.info("Alert worker stopped.")
 
