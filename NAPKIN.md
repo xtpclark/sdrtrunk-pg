@@ -72,38 +72,77 @@ Don't put it in MEMORY.md or any file loaded into AI context.
 
 ## Geocoding
 
+### Lookup order
+1. **Local address_db** (pg_trgm fuzzy match) — instant, no rate limit, handles apartments and minor Whisper errors
+2. **Local intersection lookup** — ST_DWithin join between two street address sets
+3. **Nominatim** (rate-limited to 1 req/sec) — fallback for VB/Chesapeake/Portsmouth addresses not in Norfolk DB
+
 ### Only geocode 'address' entities
 `location` entities (e.g. "the library", "East Little Creek") are too 
-ambiguous — Nominatim will geocode them to wrong places worldwide.
-Only `entity_type='address'` gets geocoded.
+ambiguous. Only `entity_type='address'` gets geocoded.
 
 ### Always validate bbox
-Nominatim returns results outside Hampton Roads even with `bounded=1`.
-Always validate with `_in_hampton_roads(lat, lon)` before saving.
-Hampton Roads bbox: SW(-76.9, 36.5) → NE(-75.9, 37.3)
+Even with `bounded=1`, validate with `_in_bbox(lat, lon)` before saving.
+Bbox comes from city config — don't hardcode coordinates in geocode.py.
 
 ### City context helps
-Always append `", Norfolk, VA"` to address strings before geocoding.
-"Military Highway" → "Military Highway, Norfolk, VA" gets the right one.
+Always append `", Norfolk, VA"` (from `CITY_GEOCODE_CONTEXT`) to queries.
+"Military Highway" → "Military Highway, Norfolk, VA" disambiguates.
 
-### Whisper address mishearings
-Common patterns that fail geocoding (Whisper errors):
-- "East Low Creek" = East Little Creek
-- "Villagard Road" = unknown (possibly Villard or Willard)
-- "8380 Kview Avenue" = unknown street
-These will return None from geocoder — that's correct behavior, don't force pins.
+### Street corrections dict
+Whisper reliably mishears certain Hampton Roads streets. These live in
+`data/cities/norfolk-va/street_corrections.json` — add new ones as discovered.
+Longest-match-first, break after first hit to prevent double-replacement.
+
+### Common Whisper geocoding failures (accepted)
+- "Church and Johnson" (no city context) — ambiguous intersection, returns None ✓
+- "I'm at the scene" — not an address, correctly returns None ✓  
+- Very short transcripts with no address content — expected None ✓
 
 ## Incident Threading
 
-### Logic order matters
-1. Geo proximity (500m) checked first — most reliable signal
-2. Radio ID match — unit already in an active incident
-3. TG window (±5 min same talkgroup) — loosest signal
-4. Create new incident only if geocoded address present
-Radio-only calls (no address) can JOIN incidents but not CREATE them.
+### Logic order matters (v2)
+1. **Geo proximity** — same category, within 500m, last 30 min (most reliable)
+2. **Radio anchor** — same category, radio_id in active incident (cross-category disabled)
+3. **TG window** — same talkgroup ±3 min (loosest signal)
+4. **Create new** — anchored to this call_id
+
+### Race condition fix
+The `UNIQUE(anchor_call_id)` constraint on `incidents` prevents duplicate
+anchors when the embed worker processes a backlog of calls on the same TG.
+`INSERT ... ON CONFLICT DO NOTHING RETURNING id` — if no row returned,
+find the winner's incident by anchor_call_id and join it.
+
+### Category scoping is critical
+Without it, a police radio that later keys on a City Services TG pulls
+Waste Management into a police incident. Scope `anchor_radio` to same
+category only. `radio_id='0'` (P25 unknown src) excluded entirely.
+
+### NSO Courts + NSO Jail
+These are the same building complex — it's correct for them to thread
+together. Don't try to separate them. They'll run for an entire shift (8h+)
+so the stale closer is set to 20 min, not 15.
+
+### Singleton explosion
+When the embed worker crashes and is restarted, calls that missed the
+NOTIFY queue never get threaded. Run the backfill:
+```python
+# Quick backfill for unthreaded transcribed calls
+from app.incidents import process_call_for_incidents
+from app.db import db
+
+with db() as conn:
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id FROM calls WHERE transcript IS NOT NULL
+          AND id NOT IN (SELECT call_id FROM incident_calls) ORDER BY ts
+    """)
+    for row in cur.fetchall():
+        process_call_for_incidents(row['id'])
+```
 
 ### Closing
-Incidents auto-close after 15 min of no activity (`close_stale_incidents()`).
+Incidents auto-close after 20 min of no activity (`close_stale_incidents()`).
 Runs in the alert worker loop every 60s.
 
 ## Archive
@@ -140,8 +179,34 @@ Start: `cd /home/pclark/git/sdrtrunk-pg && nohup .venv/bin/python scripts/run_wo
 Logs: `tail -f /tmp/sdrtrunk-workers.log`
 Kill: `kill -9 $(ps aux | grep run_workers | grep -v grep | awk '{print $2}')`
 
+### PID lockfile
+Workers write `/tmp/sdrtrunk-workers.pid` on startup and check it on launch.
+A second launch attempt will immediately exit with an error message.
+If the process died uncleanly, delete the stale pidfile: `rm /tmp/sdrtrunk-workers.pid`
+
+### Zombie workers cause backlog
+Multiple worker instances compete for the same NOTIFY queue. Calls end up
+processed by the wrong worker and incident threading gets fragmented.
+If you see `embed_backlog > 0` in health checks, check `ps aux | grep run_workers` —
+kill all but one.
+
 Workers restart needed after: `.env` changes, `app/*.py` changes (Flask
 auto-reloads but workers don't).
+
+## SDRTrunk JAR Patching (GPS)
+
+The running SDRTrunk version is v0.6.1 (pre-built at `~/git/sdr-trunk-linux-x86_64-v0.6.1`).
+The JAR has been patched to send `lat`/`lon` fields in the Broadcastify POST
+when a radio broadcasts a P25 LRRP GPS location packet.
+
+Patch applied: 2026-03-20
+Backup: `sdr-trunk-0.6.1.jar.bak`
+Source: `~/git/sdrtrunk` (tag v0.6.1, files: FormField.java, BroadcastifyCallBroadcaster.java)
+Compiled with: Bellsoft Liberica JDK 25 full (`/tmp/jdk-25.0.1-full/`)
+
+Norfolk P25 does not currently broadcast LRRP — zero GPS packets seen.
+If they ever enable it, coordinates will flow automatically without
+further code changes.
 
 ## Origin
 
