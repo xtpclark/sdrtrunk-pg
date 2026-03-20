@@ -318,6 +318,8 @@ def extract_entities(call_id: int):
             with db() as conn:
                 cur = conn.cursor()
                 for ent in entities:
+                    if not isinstance(ent, dict):
+                        continue  # guard: Gemini occasionally returns non-dict items
                     entity_type = ent.get("entity_type", "unknown")
                     value       = ent.get("value", "")
                     confidence  = float(ent.get("confidence", 0.0))

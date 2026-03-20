@@ -119,14 +119,9 @@ def receive_call():
 @bp.route("/api/call/upload/<int:call_id>", methods=["PUT"])
 def receive_audio(call_id):
     """Step 2: receive the MP3 PUT from SDRTrunk."""
-    # Auth — same key as step 1 (sent as form field or header)
-    api_key = (request.form.get("apiKey")
-               or request.headers.get("X-Api-Key")
-               or request.args.get("apiKey", ""))
-    if not _validate_key(api_key):
-        log.warning("Upload auth failed for call_id=%d from %s", call_id, request.remote_addr)
-        return "ERROR unauthorized", 401
-
+    # Note: step 2 PUT has no API key — SDRTrunk sends only the raw MP3 body.
+    # Security: the call_id is an integer from step 1 response which was auth'd.
+    # The ARCHIVE_ROOT path validation below is the defense against tampered IDs.
     try:
         with db() as conn:
             cur = conn.cursor()
