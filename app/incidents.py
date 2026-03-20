@@ -80,9 +80,20 @@ def _radio_find(cur, radio_id, category):
     return row["incident_id"] if row else None
 
 
-def _tg_find(cur, tg, ts, window=3):
+def _tg_find(cur, tg, ts, window=3, call_lat=None, call_lon=None):
+    """
+    Find active incident with same TG activity within ±window minutes.
+
+    If both the candidate incident and the incoming call have geocoded
+    locations, verify they're within 1km. This prevents dispatch channels
+    (e.g. NPD Adm/Tow) from merging sequential unrelated calls that happen
+    to be on the same TG within the time window.
+    """
     cur.execute("""
-        SELECT i.id FROM incidents i
+        SELECT i.id,
+               CASE WHEN i.has_location THEN ST_Y(i.location) END AS inc_lat,
+               CASE WHEN i.has_location THEN ST_X(i.location) END AS inc_lon
+        FROM incidents i
         JOIN incident_calls ic ON ic.incident_id=i.id
         JOIN calls c ON c.id=ic.call_id
         WHERE i.status='active'
@@ -94,7 +105,28 @@ def _tg_find(cur, tg, ts, window=3):
         ORDER BY i.last_activity DESC LIMIT 1
     """, (tg, ts, window, ts, window))
     row = cur.fetchone()
-    return row["id"] if row else None
+    if not row:
+        return None
+
+    # Geo guard: if both sides have locations, reject if >1km apart
+    if call_lat is not None and row["inc_lat"] is not None:
+        dist = _haversine(call_lat, call_lon, row["inc_lat"], row["inc_lon"])
+        if dist > 1000:
+            log.info("tg_window geo-reject: incident %d is %.0fm from new call (>1km)",
+                     row["id"], dist)
+            return None
+
+    return row["id"]
+
+
+def _haversine(lat1, lon1, lat2, lon2):
+    """Distance in meters between two lat/lon points."""
+    from math import radians, cos, sin, asin, sqrt
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    h = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    return 2 * asin(sqrt(h)) * 6371000
 
 
 def _create(cur, call_id, address, lat, lon, category, ts, radio_id) -> int:
@@ -257,7 +289,7 @@ def process_call_for_incidents(call_id: int) -> None:
                 _join(cur, iid, call_id, radio_id, "anchor_radio", ts, address, lat, lon)
                 return
 
-            iid = _tg_find(cur, tg, ts)
+            iid = _tg_find(cur, tg, ts, call_lat=lat, call_lon=lon)
             if iid:
                 _join(cur, iid, call_id, radio_id, "tg_window", ts, address, lat, lon)
                 return
@@ -270,7 +302,7 @@ def process_call_for_incidents(call_id: int) -> None:
                 _join(cur, iid, call_id, radio_id, "anchor_radio", ts)
                 return
 
-            iid = _tg_find(cur, tg, ts)
+            iid = _tg_find(cur, tg, ts, call_lat=lat, call_lon=lon)
             if iid:
                 _join(cur, iid, call_id, radio_id, "tg_window", ts)
                 return
