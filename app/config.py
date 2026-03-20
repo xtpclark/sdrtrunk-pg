@@ -58,6 +58,13 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 # Archive root — MP3s stored as {ARCHIVE_ROOT}/{YYYYMMDD}/{tg}/{filename}.mp3
 ARCHIVE_ROOT = Path(os.getenv("ARCHIVE_ROOT", "/var/sdrtrunk/archive"))
 
+# Base URL returned to SDRTrunk in step-1 Broadcastify response.
+# Must be reachable from the SDRTrunk host. Change if not running on localhost.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5010")
+
+# Maximum MP3 upload size (bytes). P25 calls at 16kbps CBR are <500KB.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+
 # Merge output — merged MP3s stored here
 MERGE_ROOT = Path(os.getenv("MERGE_ROOT", "/var/sdrtrunk/merges"))
 

@@ -12,6 +12,11 @@ def create_app():
     app = Flask(__name__, template_folder="../templates")
 
     # ----------------------------------------------------------------
+    # Upload size limit — protects against OOM from oversized bodies
+    # ----------------------------------------------------------------
+    app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
+
+    # ----------------------------------------------------------------
     # Logging
     # ----------------------------------------------------------------
     log_level = logging.DEBUG if config.DEBUG else logging.INFO

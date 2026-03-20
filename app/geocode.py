@@ -18,6 +18,7 @@ Usage:
 """
 
 import logging
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -41,18 +42,23 @@ _VIEWBOX = f"{_BBOX_SW_LON},{_BBOX_NE_LAT},{_BBOX_NE_LON},{_BBOX_SW_LAT}"
 _CITY_CONTEXT = CITY_GEOCODE_CONTEXT
 
 # In-memory cache: normalized_address → (lat, lon) or None
+# None is only stored for confirmed "no results" — not for transient errors.
 _cache: dict[str, Optional[Tuple[float, float]]] = {}
+_cache_lock = threading.Lock()
 
 _last_request_time: float = 0.0
-_MIN_INTERVAL_SEC: float = 1.1  # slightly over 1s to be safe
+_rate_lock = threading.Lock()
+_MIN_INTERVAL_SEC: float = 1.1  # slightly over 1s per Nominatim ToS
 
 
 def _rate_limit():
-    global _last_request_time
-    elapsed = time.monotonic() - _last_request_time
-    if elapsed < _MIN_INTERVAL_SEC:
-        time.sleep(_MIN_INTERVAL_SEC - elapsed)
-    _last_request_time = time.monotonic()
+    """Thread-safe rate limiter for Nominatim (1 req/sec)."""
+    with _rate_lock:
+        global _last_request_time
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < _MIN_INTERVAL_SEC:
+            time.sleep(_MIN_INTERVAL_SEC - elapsed)
+        _last_request_time = time.monotonic()
 
 
 def _in_bbox(lat: float, lon: float) -> bool:
@@ -256,35 +262,39 @@ def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, fl
         return None
 
     cache_key = address.lower()
-    if cache_key in _cache:
-        return _cache[cache_key]
+    with _cache_lock:
+        if cache_key in _cache:
+            return _cache[cache_key]
 
     headers = {"User-Agent": "sdrtrunk-pg/1.0 scanner-radio-transcription"}
+
+    def _store(val):
+        """Thread-safe cache write."""
+        with _cache_lock:
+            _cache[cache_key] = val
 
     # ── Intersection path ─────────────────────────────────────────────
     if _is_intersection(address):
         parts = _re.split(r'\band\b', address, flags=_re.IGNORECASE, maxsplit=1)
         if len(parts) == 2:
             s1, s2 = parts[0].strip(), parts[1].strip()
-            # Try local DB intersection first
             result = _local_intersection(s1, s2)
             if result:
-                _cache[cache_key] = result
+                _store(result)
                 return result
-            # Fall back to Nominatim structured intersection query
             result = _geocode_intersection(s1, s2)
             if result:
                 log.info("Nominatim intersection %r → (%.5f, %.5f)", address, *result)
-                _cache[cache_key] = result
+                _store(result)
                 return result
 
     # ── Local DB lookup (fast, no rate limit) ────────────────────────
     result = _local_lookup(address)
     if result:
-        _cache[cache_key] = result
+        _store(result)
         return result
 
-    # ── Nominatim fallback (rate-limited, catches VB/Chesapeake/etc.) ─
+    # ── Nominatim fallback (rate-limited) ────────────────────────────
     query = f"{address}, {_CITY_CONTEXT}" if city_context else address
 
     _rate_limit()
@@ -304,11 +314,11 @@ def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, fl
         resp.raise_for_status()
         results = resp.json()
     except Exception as exc:
+        # Transient error — do NOT cache None so we can retry later
         log.error("Nominatim request failed for %r: %s", address, exc)
-        _cache[cache_key] = None
         return None
 
-    # If bounded returns nothing, try without bounding (but still validate)
+    # If bounded returns nothing, retry without bounding box
     if not results:
         params["bounded"] = 0
         try:
@@ -316,20 +326,21 @@ def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, fl
                                 headers=headers, timeout=10)
             results = resp.json()
         except Exception:
-            pass
+            return None  # transient — don't cache
 
     for r in results:
         try:
             lat, lon = float(r["lat"]), float(r["lon"])
             if _in_bbox(lat, lon):
                 log.info("Geocoded %r → (%.5f, %.5f)", address, lat, lon)
-                _cache[cache_key] = (lat, lon)
+                _store((lat, lon))
                 return (lat, lon)
         except (KeyError, ValueError):
             continue
 
-    log.debug("Nominatim: no Hampton Roads result for %r", address)
-    _cache[cache_key] = None
+    # Confirmed no results — safe to cache as None
+    log.debug("Nominatim: no result for %r", address)
+    _store(None)
     return None
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from flask import Blueprint, request, jsonify, send_file, abort
 
+from app.config import ARCHIVE_ROOT
 from app.db import db
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,14 @@ def stream_audio(call_id):
             abort(404)
 
     path = Path(row["file_path"])
+
+    # Validate path is within ARCHIVE_ROOT — defense against tampered records
+    try:
+        path.resolve().relative_to(ARCHIVE_ROOT.resolve())
+    except ValueError:
+        log.error("Audio path outside ARCHIVE_ROOT, refusing: %s", path)
+        abort(403)
+
     if not path.exists():
         log.error("Audio file missing on disk: %s", path)
         abort(404)

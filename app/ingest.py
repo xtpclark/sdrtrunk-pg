@@ -7,13 +7,14 @@ SDRTrunk sends a multipart/form-data POST with:
 Test posts (from SDRTrunk startup) include a "test" field — return plain "OK".
 """
 
+import hmac
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify
 
-from app.config import API_KEY, ARCHIVE_ROOT
+from app.config import API_KEY, ARCHIVE_ROOT, APP_BASE_URL
 from app.db import db
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,8 @@ bp = Blueprint("ingest", __name__)
 
 
 def _validate_key(key: str) -> bool:
-    return key == API_KEY
+    """Timing-safe API key comparison."""
+    return hmac.compare_digest(key.encode(), API_KEY.encode())
 
 
 def _build_path(ts: datetime, tg: int, radio_id: str) -> Path:
@@ -110,13 +112,21 @@ def receive_call():
     log.info("Registered call id=%d tg=%d duration=%.1fs%s — awaiting audio upload", call_id, tg, duration, gps_str)
 
     # Return upload URL per Broadcastify two-step protocol
-    upload_url = f"http://localhost:5010/api/call/upload/{call_id}"
+    upload_url = f"{APP_BASE_URL}/api/call/upload/{call_id}"
     return f"0 {upload_url}", 200
 
 
 @bp.route("/api/call/upload/<int:call_id>", methods=["PUT"])
 def receive_audio(call_id):
     """Step 2: receive the MP3 PUT from SDRTrunk."""
+    # Auth — same key as step 1 (sent as form field or header)
+    api_key = (request.form.get("apiKey")
+               or request.headers.get("X-Api-Key")
+               or request.args.get("apiKey", ""))
+    if not _validate_key(api_key):
+        log.warning("Upload auth failed for call_id=%d from %s", call_id, request.remote_addr)
+        return "ERROR unauthorized", 401
+
     try:
         with db() as conn:
             cur = conn.cursor()
@@ -131,6 +141,14 @@ def receive_audio(call_id):
 
     file_path = Path(row["file_path"])
     tg = row["tg"]
+
+    # Validate path is within ARCHIVE_ROOT — defense against tampered DB records
+    try:
+        file_path.resolve().relative_to(ARCHIVE_ROOT.resolve())
+    except ValueError:
+        log.error("file_path outside ARCHIVE_ROOT for call_id=%d: %s", call_id, file_path)
+        return "ERROR invalid path", 500
+
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:

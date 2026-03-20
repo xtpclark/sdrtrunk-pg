@@ -230,6 +230,7 @@ def incidents_geo():
             FROM incidents i
             {where}
             ORDER BY i.last_activity DESC
+            LIMIT 500
             """,
             params,
         )

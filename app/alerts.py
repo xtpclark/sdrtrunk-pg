@@ -166,7 +166,7 @@ def check_volume_spike(tg: int, category: Optional[str] = None):
                   AND fired_at >= date_trunc('hour', now())
                   AND message LIKE %s
                 """,
-                (rule["id"], f"%tg {tg}%"),
+                (rule["id"], f"%tg {tg} %"),  # trailing space prevents TG 6 matching TG 60
             )
             if not cur.fetchone():
                 cur.execute(
@@ -246,10 +246,21 @@ def send_alert(alert_id: int):
 
 def run_alert_check():
     """
-    1. Check volume spikes for all talkgroups active in the last hour.
-    2. Deliver all pending (notified=false) alerts.
+    1. Refresh the call volume baseline materialized view (needed for spike detection).
+    2. Check volume spikes for all talkgroups active in the last hour.
+    3. Deliver all pending (notified=false) alerts.
     """
     log.debug("Running alert check…")
+
+    # Refresh baseline — must run before volume spike checks.
+    # CONCURRENTLY requires no exclusive lock; safe to call every 60s.
+    try:
+        with db() as conn:
+            conn.cursor().execute(
+                "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_call_volume_baseline"
+            )
+    except Exception as exc:
+        log.warning("Could not refresh mv_call_volume_baseline: %s", exc)
 
     # Volume spikes: check tgs active this hour
     try:
