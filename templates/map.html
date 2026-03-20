@@ -419,10 +419,15 @@
     .dp-play:disabled { opacity:.2; cursor:not-allowed; }
 
     #dp-foot { padding:8px 14px; border-top:1px solid var(--border); flex-shrink:0; }
-    #dp-play-all { width:100%; background:var(--lift); border:1px solid var(--border2);
-                   color:var(--blue); font-size:13px; font-weight:600; padding:7px;
-                   border-radius:5px; cursor:pointer; transition:background .12s; }
-    #dp-play-all:hover { background:var(--card2); }
+    #dp-foot-btns { display:flex; gap:8px; }
+    #dp-play-all, #dp-download {
+      flex:1; background:var(--lift); border:1px solid var(--border2);
+      color:var(--blue); font-size:13px; font-weight:600; padding:7px;
+      border-radius:5px; cursor:pointer; transition:background .12s; white-space:nowrap;
+    }
+    #dp-play-all:hover, #dp-download:hover { background:var(--card2); }
+    #dp-download.merging { color:var(--muted); cursor:default; animation:none; }
+    #dp-download.ready   { color:var(--green); border-color:var(--green); }
 
     /* ═══ LIVE FEED ════════════════════════════════════════════════ */
     #feed {
@@ -672,7 +677,10 @@
       </div>
       <div id="dp-calls"></div>
       <div id="dp-foot">
-        <button id="dp-play-all" onclick="playAll()">▶ Play All Audio</button>
+        <div id="dp-foot-btns">
+          <button id="dp-play-all" onclick="playAll()">▶ Play All</button>
+          <button id="dp-download" onclick="startMerge()">⬇ Download MP3</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1371,6 +1379,7 @@ function selectThread(id, lat, lon) {
 
 async function openDetail(id) {
   selIncidentId = id;
+  resetMergeBtn();
   const panel = document.getElementById('detail');
   panel.classList.add('open');
   document.getElementById('dp-addr').textContent='Loading…';
@@ -1421,6 +1430,74 @@ function closeDetail() {
   document.querySelectorAll('.tc').forEach(el=>el.classList.remove('sel'));
   hlFeed(null);
   stopAudio();
+}
+
+// ═══ INCIDENT MERGE / DOWNLOAD ════════════════════════════════
+let _mergeJobId  = null;
+let _mergePollTimer = null;
+
+async function startMerge() {
+  if (!selIncidentId) return;
+  const btn = document.getElementById('dp-download');
+  btn.textContent = '⏳ Building…';
+  btn.classList.add('merging');
+  btn.onclick = null;
+
+  try {
+    const r    = await fetch(`/api/incidents/${selIncidentId}/merge`, { method:'POST' });
+    const data = await r.json();
+    if (!r.ok) {
+      btn.textContent = '⚠ ' + (data.error || 'Failed');
+      setTimeout(() => resetMergeBtn(), 3000);
+      return;
+    }
+    _mergeJobId = data.job_id;
+    btn.textContent = `⏳ Merging ${data.track_count} calls…`;
+    _mergePollTimer = setInterval(() => pollMerge(data.audio_url, data.label), 1500);
+  } catch(e) {
+    btn.textContent = '⚠ Error';
+    setTimeout(() => resetMergeBtn(), 3000);
+  }
+}
+
+async function pollMerge(audioUrl, label) {
+  if (!_mergeJobId) return;
+  try {
+    const r    = await fetch(`/api/merge/${_mergeJobId}`);
+    const data = await r.json();
+    const btn  = document.getElementById('dp-download');
+
+    if (data.status === 'done') {
+      clearInterval(_mergePollTimer);
+      _mergePollTimer = null;
+      btn.textContent = '✅ Download MP3';
+      btn.classList.remove('merging');
+      btn.classList.add('ready');
+      btn.onclick = () => {
+        // Trigger browser download
+        const a = document.createElement('a');
+        a.href     = audioUrl;
+        a.download = (label || 'incident') + '.mp3';
+        a.click();
+        setTimeout(() => resetMergeBtn(), 2000);
+      };
+    } else if (data.status === 'failed') {
+      clearInterval(_mergePollTimer);
+      btn.textContent = '⚠ Merge failed';
+      setTimeout(() => resetMergeBtn(), 4000);
+    }
+  } catch(e) { /* poll quietly */ }
+}
+
+function resetMergeBtn() {
+  clearInterval(_mergePollTimer);
+  _mergePollTimer = null;
+  _mergeJobId     = null;
+  const btn = document.getElementById('dp-download');
+  if (!btn) return;
+  btn.textContent = '⬇ Download MP3';
+  btn.className   = '';
+  btn.onclick     = startMerge;
 }
 
 // ═══ AUDIO ════════════════════════════════════════════════════
