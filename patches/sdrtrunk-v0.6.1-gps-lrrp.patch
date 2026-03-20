@@ -1,0 +1,43 @@
+--- a/src/main/java/io/github/dsheirer/audio/broadcast/broadcastify/FormField.java
++++ b/src/main/java/io/github/dsheirer/audio/broadcast/broadcastify/FormField.java
+@@ -32,7 +32,9 @@
+     RADIO_ID("src"),
+     FREQUENCY("freq"),
+     ENCODING("enc"),
+-    TEST("test");
++    TEST("test"),
++    LATITUDE("lat"),
++    LONGITUDE("lon");
+ 
+     private String mHeader;
+ 
+--- a/src/main/java/io/github/dsheirer/audio/broadcast/broadcastify/BroadcastifyCallBroadcaster.java
++++ b/src/main/java/io/github/dsheirer/audio/broadcast/broadcastify/BroadcastifyCallBroadcaster.java
+@@ -33,6 +33,8 @@
+ import io.github.dsheirer.identifier.IdentifierClass;
+ import io.github.dsheirer.identifier.Role;
+ import io.github.dsheirer.identifier.configuration.ConfigurationLongIdentifier;
++import io.github.dsheirer.identifier.location.LocationIdentifier;
++import io.github.dsheirer.identifier.location.Point;
+ import io.github.dsheirer.identifier.patch.PatchGroup;
+ import io.github.dsheirer.identifier.patch.PatchGroupIdentifier;
+ import io.github.dsheirer.identifier.radio.RadioIdentifier;
+@@ -256,6 +258,18 @@
+                     .addPart(FormField.RADIO_ID, radioId)
+                     .addPart(FormField.FREQUENCY, frequency)
+                     .addPart(FormField.ENCODING, ENCODING_TYPE_MP3);
++                // Attach GPS coordinates if the radio reported a location on this call
++                if(audioRecording.hasIdentifierCollection())
++                {
++                    Identifier locId = audioRecording.getIdentifierCollection()
++                        .getIdentifier(IdentifierClass.USER, Form.LOCATION, Role.FROM);
++                    if(locId instanceof LocationIdentifier)
++                    {
++                        Point pt = ((LocationIdentifier)locId).getValue();
++                        bodyBuilder.addPart(FormField.LATITUDE, pt.getLatitude());
++                        bodyBuilder.addPart(FormField.LONGITUDE, pt.getLongitude());
++                    }
++                }
+ 
+                 try
+                 {

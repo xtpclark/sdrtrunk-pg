@@ -133,15 +133,11 @@ Open `http://localhost:5010/map` and watch the calls roll in.
 
 ## SDRTrunk Configuration
 
-In SDRTrunk, open your alias list and add a **Broadcastify Calls** broadcast channel to each talkgroup you want to capture. Then configure the broadcaster:
+See **[docs/sdrtrunk-setup.md](docs/sdrtrunk-setup.md)** for the full guide.
 
-| Field | Value |
-|---|---|
-| API URL | `http://your-server:5010/api/call` |
-| API Key | the `API_KEY` from your `.env` |
-| System ID | your P25 system name (e.g. `VA-HR-P25`) |
+Short version: configure a **Broadcastify Calls** broadcaster in SDRTrunk pointing at `http://your-server:5010/api/call`, then add that broadcaster as a broadcast channel on each alias you want to capture. Both steps are required — the broadcaster alone does nothing without the alias wiring.
 
-SDRTrunk sends a two-step POST: metadata first (returns `"0 <upload_url>"`), then the MP3 binary as a PUT. See `NAPKIN.md` for the full protocol details.
+SDRTrunk sends a two-step POST: metadata first (returns `"0 <upload_url>"`), then the MP3 binary as a PUT. If step 1 returns anything else, SDRTrunk silently drops the call.
 
 ---
 
@@ -289,6 +285,10 @@ Incidents auto-close after 20 minutes of silence.
 | `alerts` | Fired alert log |
 
 ---
+
+## SDRTrunk Patches
+
+See **[patches/README.md](patches/README.md)** for patch details and how to apply them to a different SDRTrunk version.
 
 ## GPS / LRRP
 
