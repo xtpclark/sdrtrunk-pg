@@ -1071,7 +1071,7 @@ function renderAlerts(alerts) {
     const icon      = isSpike ? '📈' : '🚨';
     const actionTxt = a.incident_id
       ? `→ View incident`
-      : a.tg ? `→ Filter to ${a.alpha_tag || 'TG ' + a.tg}` : '';
+      : a.tg ? `→ Show ${a.alpha_tag || 'TG ' + a.tg} calls` : '';
     const ago = a.fired_at ? fmtAgo(a.fired_at) : '';
 
     // Use backend-derived category for volume spikes so label is always accurate
@@ -1092,36 +1092,68 @@ function renderAlerts(alerts) {
   }).join('');
 }
 
-function onAlertClick(alertId, incidentId, tg) {
-  // If we have an incident → open the detail panel and fly to it
+async function onAlertClick(alertId, incidentId, tg) {
+  // If we have a linked incident → open the detail panel directly
   if (incidentId) {
     openDetail(incidentId);
-    // Also scroll the sidebar to that incident card
     const card = document.getElementById('tc-' + incidentId);
-    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (card) card.scrollIntoView({ behavior:'smooth', block:'nearest' });
     return;
   }
 
-  // Volume spike with no incident → filter sidebar to that TG
-  if (tg) {
-    // Switch to incidents tab
-    document.querySelectorAll('.sb-tab').forEach(t => t.classList.remove('on'));
-    document.querySelector('.sb-tab[data-tab="incidents"]').classList.add('on');
-    activeTab = 'incidents';
-    document.getElementById('incidents-panel').style.display = 'block';
-    document.getElementById('stats-panel').classList.remove('on');
-    document.getElementById('search-panel').classList.remove('on');
+  // No linked incident (volume spike) → show recent calls for this TG
+  // in the Search tab so the user can see what's driving the spike
+  if (!tg) return;
 
-    // Flash the feed rows for this TG
-    document.querySelectorAll('.fr').forEach(el => {
-      const isTg = el.dataset.tg == tg;
-      el.style.transition = 'background .1s';
-      el.style.background = isTg ? 'rgba(248,81,73,.15)' : '';
-      if (isTg) setTimeout(() => el.style.background = '', 2000);
-    });
+  // Switch to search tab
+  document.querySelectorAll('.sb-tab').forEach(t => t.classList.remove('on'));
+  document.getElementById('tab-search').classList.add('on');
+  activeTab = 'search';
+  document.getElementById('incidents-panel').style.display = 'none';
+  document.getElementById('stats-panel').classList.remove('on');
+  document.getElementById('search-panel').classList.add('on');
 
-    // Run a search for this TG's recent calls
-    searchInput.value = '';
+  document.getElementById('search-state').innerHTML = '<div class="search-spinner"></div>Loading recent calls…';
+  document.getElementById('search-results').innerHTML = '';
+  searchInput.value = '';
+  searchClear.style.display = 'none';
+  searchMode.style.display  = 'none';
+
+  try {
+    const r    = await fetch(`/api/calls?tg=${tg}&limit=30`);
+    const data = await r.json();
+    const rows = data.calls || [];
+
+    const stateEl = document.getElementById('search-state');
+    const resEl   = document.getElementById('search-results');
+
+    if (!rows.length) {
+      stateEl.textContent = 'No recent calls found for this talkgroup.';
+      return;
+    }
+
+    // Show alpha_tag header
+    const tgName = rows[0].alpha_tag || ('TG ' + tg);
+    stateEl.innerHTML = `<strong style="color:var(--text)">${tgName}</strong> — last ${rows.length} calls`;
+
+    resEl.innerHTML = rows.map(row => {
+      const k  = catKey(row.category);
+      const tx = (row.transcript || '').slice(0, 160);
+      return `
+        <div class="sr-row c-${k}" style="border-left-color:${CAT_COLOR[k]||'#6b7280'}"
+             onclick="playCall(${row.id})">
+          <div class="sr-row-top">
+            ${badge(row.category)}
+            <span class="sr-tg" style="color:var(--muted)">${row.radio_id || '—'}</span>
+            <span class="sr-time">${fmtTime(row.ts_local || row.ts)}</span>
+          </div>
+          <div class="sr-tx">${tx ? '"'+tx+'"' : '<em style="color:var(--muted)">no transcript</em>'}</div>
+        </div>`;
+    }).join('');
+
+  } catch(e) {
+    document.getElementById('search-state').textContent = 'Error loading calls.';
+    console.error(e);
   }
 }
 
