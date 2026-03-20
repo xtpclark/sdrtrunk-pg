@@ -212,10 +212,12 @@ def live_feed():
 @bp.route("/api/threads", methods=["GET"])
 def threads():
     """
-    GET /api/threads — all active incidents, located + unlocated.
-    Returns located (has_location=true) and unlocated separately,
-    sorted: active first, then by last_activity desc.
+    GET /api/threads — active + recent incidents, located + unlocated.
+    ?minutes=N (default 120) — show incidents with activity in last N minutes.
     """
+    minutes = request.args.get("minutes", 120, type=int)
+    minutes = max(5, min(minutes, 10080))
+
     with db() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -253,13 +255,13 @@ def threads():
                     LIMIT 1
                 ) AS last_alpha_tag
             FROM incidents i
-            WHERE i.status = 'active'
-               OR i.last_activity > now() - interval '5 minutes'
+            WHERE i.last_activity > now() - (%s || ' minutes')::interval
             ORDER BY
                 CASE WHEN i.status = 'active' THEN 0 ELSE 1 END,
                 i.last_activity DESC
-            LIMIT 100
+            LIMIT 150
             """,
+            (str(minutes),),
         )
         rows = [dict(r) for r in cur.fetchall()]
 

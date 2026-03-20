@@ -57,6 +57,15 @@ def receive_call():
         freq_raw  = float(request.form.get("freq", 0))
         # SDRTrunk sends freq in MHz (e.g. 856.6375), convert to Hz
         freq_hz   = int(freq_raw * 1_000_000) if freq_raw < 10_000 else int(freq_raw)
+        # GPS coords (optional — only present if radio reported location via P25 LC header)
+        lat_raw   = request.form.get("lat")
+        lon_raw   = request.form.get("lon")
+        lat       = float(lat_raw) if lat_raw else None
+        lon       = float(lon_raw) if lon_raw else None
+        # Sanity-check coordinates (Hampton Roads bounding box + some margin)
+        if lat is not None and not (35.0 <= lat <= 38.5 and -77.5 <= lon <= -74.5):
+            log.warning("GPS out of bounds lat=%.5f lon=%.5f — discarding", lat, lon)
+            lat = lon = None
     except (ValueError, TypeError) as exc:
         log.error("Bad form fields: %s", exc)
         return jsonify({"error": "bad request", "detail": str(exc)}), 400
@@ -80,11 +89,11 @@ def receive_call():
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO calls (tg, system_id, radio_id, ts, duration_sec, freq_hz, file_path)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO calls (tg, system_id, radio_id, ts, duration_sec, freq_hz, file_path, lat, lon)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (tg, system_id, radio_id, ts, duration, freq_hz, str(file_path)),
+                (tg, system_id, radio_id, ts, duration, freq_hz, str(file_path), lat, lon),
             )
             row = cur.fetchone()
             call_id = row["id"]
@@ -92,7 +101,8 @@ def receive_call():
         log.error("DB insert failed for tg=%d: %s", tg, exc)
         return jsonify({"error": "db error"}), 500
 
-    log.info("Registered call id=%d tg=%d duration=%.1fs — awaiting audio upload", call_id, tg, duration)
+    gps_str = f" gps=({lat:.5f},{lon:.5f})" if lat is not None else ""
+    log.info("Registered call id=%d tg=%d duration=%.1fs%s — awaiting audio upload", call_id, tg, duration, gps_str)
 
     # Return upload URL per Broadcastify two-step protocol
     upload_url = f"http://localhost:5010/api/call/upload/{call_id}"

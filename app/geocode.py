@@ -61,44 +61,278 @@ def _in_hampton_roads(lat: float, lon: float) -> bool:
             _BBOX_SW_LON <= lon <= _BBOX_NE_LON)
 
 
+# ── Street name normalization ────────────────────────────────────────────
+# Abbreviation patterns — only match STANDALONE abbreviations (not already expanded)
+# Each tuple: (pattern, full_word) — pattern uses negative lookahead to avoid doubling
+_ABBREV = [
+    (r'\bave(?!nue)\b',       'Avenue'),
+    (r'\bblvd(?!evard)\b',    'Boulevard'),
+    (r'\bst(?!reet)\b',       'Street'),
+    (r'\brd(?!oad)\b',        'Road'),
+    (r'\bdr(?!ive)\b',        'Drive'),
+    (r'\bln(?!ane)\b',        'Lane'),
+    (r'\bct(?!ourt)\b',       'Court'),
+    (r'\bhwy(?!ay)\b',        'Highway'),
+    (r'\bpkwy\b',             'Parkway'),
+    (r'\bpl(?!ace)\b',        'Place'),
+    (r'\bter(?!race)\b',      'Terrace'),
+    (r'\bn(?!orth)\b',        'North'),
+    (r'\bs(?!outh)\b',        'South'),
+    (r'\be(?!ast)\b',         'East'),
+    (r'\bw(?!est)\b',         'West'),
+    (r'\bnb\b',               'North'),
+    (r'\bsb\b',               'South'),
+    (r'\beb\b',               'East'),
+    (r'\bwb\b',               'West'),
+]
+
+# Known Whisper mis-transcriptions of Hampton Roads street names
+# Street name corrections: map wrong/partial → correct base name (NO suffix here —
+# the abbreviation expander will add/correct suffixes after).
+# These replace the misheard portion only, preserving surrounding text.
+_CORRECTIONS = {
+    'isaiah garden':           'Azalea Garden',    # Whisper hallucination for Azalea Garden Rd
+    'azalea garden road':      'Azalea Garden Road',
+    'azalea garden':           'Azalea Garden',
+    'little creek road':       'Little Creek Road',
+    'little creek':            'Little Creek',
+    'north military highway':  'North Military Highway',
+    'south military highway':  'South Military Highway',
+    'military highway':        'Military Highway',
+    'north military':          'North Military Highway',
+    'south military':          'South Military Highway',
+    'hampton boulevard':       'Hampton Boulevard',
+    'virginia beach boulevard':'Virginia Beach Boulevard',
+    'terminal boulevard':      'Terminal Boulevard',
+    'tidewater drive':         'Tidewater Drive',
+    'tidewater':               'Tidewater Drive',
+    'brambleton avenue':       'Brambleton Avenue',
+    'brambleton':              'Brambleton Avenue',
+    'monticello avenue':       'Monticello Avenue',
+    'monticello':              'Monticello Avenue',
+    'princess anne road':      'Princess Anne Road',
+    'princess anne':           'Princess Anne Road',
+    'granby street':           'Granby Street',
+    'granby':                  'Granby Street',
+    'colley avenue':           'Colley Avenue',
+    'colley':                  'Colley Avenue',
+    'norview avenue':          'Norview Avenue',
+    'norview':                 'Norview Avenue',
+    'church street':           'Church Street',
+    'johnson avenue':          'Johnson Avenue',
+}
+
+import re as _re
+
+def _normalize_address(address: str) -> str:
+    """
+    Normalize abbreviations and fix known Whisper transcription errors.
+    Corrections are applied as whole-phrase replacements BEFORE abbreviation
+    expansion so we don't double-expand suffixes already in the correction.
+    """
+    s = address.strip()
+    sl = s.lower()
+
+    # Apply known corrections — longest match first, stop after first match
+    # to prevent shorter overlapping patterns from double-replacing.
+    for wrong, right in sorted(_CORRECTIONS.items(), key=lambda x: -len(x[0])):
+        if wrong in sl:
+            s = _re.sub(_re.escape(wrong), right, s, flags=_re.IGNORECASE)
+            sl = s.lower()
+            break  # one correction per address — avoids substring double-match
+
+    # Always run abbreviation expansion — patterns use negative lookaheads
+    # to avoid doubling already-expanded words (e.g. "Avenue" won't match \bave(?!nue)\b)
+    for pattern, replacement in _ABBREV:
+        s = _re.sub(pattern, replacement, s, flags=_re.IGNORECASE)
+
+    return s.strip()
+
+
+def _is_intersection(address: str) -> bool:
+    """Detect intersection format: "Street1 and Street2"."""
+    return bool(_re.search(r'\band\b', address, _re.IGNORECASE))
+
+
+def _geocode_intersection(street1: str, street2: str) -> Optional[Tuple[float, float]]:
+    """
+    Use Nominatim structured query for intersections, which handles
+    cross-street lookups better than the freeform q= parameter.
+    """
+    _rate_limit()
+    params = {
+        "street": f"{street1} and {street2}",
+        "city": "Norfolk",
+        "state": "VA",
+        "country": "US",
+        "format": "json",
+        "limit": 3,
+        "addressdetails": 0,
+    }
+    headers = {"User-Agent": "sdrtrunk-pg/1.0 scanner-radio-transcription"}
+    try:
+        resp = requests.get(f"{NOMINATIM_URL}/search", params=params,
+                            headers=headers, timeout=10)
+        resp.raise_for_status()
+        results = resp.json()
+        for r in results:
+            try:
+                lat, lon = float(r["lat"]), float(r["lon"])
+                if _in_hampton_roads(lat, lon):
+                    return (lat, lon)
+            except (KeyError, ValueError):
+                continue
+    except Exception as exc:
+        log.debug("Intersection geocode failed for %r/%r: %s", street1, street2, exc)
+    return None
+
+
+def _local_lookup(address: str) -> Optional[Tuple[float, float]]:
+    """
+    Fast local geocode against the address_db table loaded from city open data.
+    Uses pg_trgm similarity for fuzzy matching — handles minor Whisper errors.
+    Returns (lat, lon) if similarity >= 0.55, else None.
+    """
+    query_upper = address.upper().strip()
+    if not query_upper or len(query_upper) < 5:
+        return None
+
+    sql = """
+        SELECT lat, lon, full_address,
+               similarity(full_address, %s) AS sim
+        FROM address_db
+        WHERE full_address %% %s
+        ORDER BY sim DESC
+        LIMIT 1
+    """
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, (query_upper, query_upper))
+            row = cur.fetchone()
+        if row and row["sim"] >= 0.55:
+            log.info("Local geocode %r → %r (sim=%.2f) (%.5f, %.5f)",
+                     address, row["full_address"], row["sim"], row["lat"], row["lon"])
+            return (row["lat"], row["lon"])
+    except Exception as exc:
+        log.debug("Local lookup failed for %r: %s", address, exc)
+    return None
+
+
+def _local_intersection(street1: str, street2: str) -> Optional[Tuple[float, float]]:
+    """
+    Find intersection of two streets by averaging all address points on street1
+    that are nearest to street2 addresses. Fast approximation using DB.
+    """
+    s1 = street1.upper().strip()
+    s2 = street2.upper().strip()
+    if not s1 or not s2:
+        return None
+
+    # Find the midpoint of addresses on street1 that are closest to any address on street2
+    sql = """
+        SELECT avg(a1.lat) as lat, avg(a1.lon) as lon
+        FROM address_db a1
+        WHERE a1.full_street %% %s
+          AND EXISTS (
+              SELECT 1 FROM address_db a2
+              WHERE a2.full_street %% %s
+                AND ST_DWithin(
+                    ST_SetSRID(ST_MakePoint(a1.lon, a1.lat), 4326)::geography,
+                    ST_SetSRID(ST_MakePoint(a2.lon, a2.lat), 4326)::geography,
+                    200
+                )
+          )
+        HAVING count(*) > 0
+    """
+    try:
+        with db() as conn:
+            cur = conn.cursor()
+            # Use street_name column for cleaner matching
+            cur.execute("""
+                SELECT avg(a1.lat) as lat, avg(a1.lon) as lon, count(*) as cnt
+                FROM address_db a1
+                JOIN address_db a2 ON (
+                    similarity(a2.full_street, %s) > 0.5
+                    AND ST_DWithin(
+                        ST_SetSRID(ST_MakePoint(a1.lon, a1.lat), 4326)::geography,
+                        ST_SetSRID(ST_MakePoint(a2.lon, a2.lat), 4326)::geography,
+                        150
+                    )
+                )
+                WHERE similarity(a1.full_street, %s) > 0.5
+                HAVING count(*) > 0
+            """, (s2, s1))
+            row = cur.fetchone()
+        if row and row["cnt"] and row["lat"]:
+            log.info("Local intersection %r & %r → (%.5f, %.5f) (%d pts)",
+                     street1, street2, row["lat"], row["lon"], row["cnt"])
+            return (float(row["lat"]), float(row["lon"]))
+    except Exception as exc:
+        log.debug("Local intersection failed %r & %r: %s", street1, street2, exc)
+    return None
+
+
 def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, float]]:
     """
     Geocode an address string, biased and bounded to Hampton Roads.
 
     Returns (lat, lon) or None. Results are cached in-process.
+    Handles:
+      - Street addresses: "827 Norview Avenue"
+      - Intersections:    "Church Street and Johnson Avenue"
+      - Normalizes abbreviations and known Whisper transcription errors
     """
-    address = address.strip()
-    if not address or len(address) < 4:
+    address = _normalize_address(address.strip())
+    if not address or len(address) < 5:
         return None
 
-    # Append city context for disambiguation
-    query = f"{address}, {_CITY_CONTEXT}" if city_context else address
-
-    cache_key = query.lower()
+    cache_key = address.lower()
     if cache_key in _cache:
         return _cache[cache_key]
 
-    _rate_limit()
-
-    params = {
-        "q": query,
-        "format": "json",
-        "limit": 3,          # get a few candidates so we can pick the best
-        "addressdetails": 0,
-        "countrycodes": "us",
-        "viewbox": _VIEWBOX,
-        "bounded": 1,        # ONLY return results inside the viewbox
-    }
-
     headers = {"User-Agent": "sdrtrunk-pg/1.0 scanner-radio-transcription"}
 
+    # ── Intersection path ─────────────────────────────────────────────
+    if _is_intersection(address):
+        parts = _re.split(r'\band\b', address, flags=_re.IGNORECASE, maxsplit=1)
+        if len(parts) == 2:
+            s1, s2 = parts[0].strip(), parts[1].strip()
+            # Try local DB intersection first
+            result = _local_intersection(s1, s2)
+            if result:
+                _cache[cache_key] = result
+                return result
+            # Fall back to Nominatim structured intersection query
+            result = _geocode_intersection(s1, s2)
+            if result:
+                log.info("Nominatim intersection %r → (%.5f, %.5f)", address, *result)
+                _cache[cache_key] = result
+                return result
+
+    # ── Local DB lookup (fast, no rate limit) ────────────────────────
+    result = _local_lookup(address)
+    if result:
+        _cache[cache_key] = result
+        return result
+
+    # ── Nominatim fallback (rate-limited, catches VB/Chesapeake/etc.) ─
+    query = f"{address}, {_CITY_CONTEXT}" if city_context else address
+
+    _rate_limit()
+    params = {
+        "q":            query,
+        "format":       "json",
+        "limit":        3,
+        "addressdetails": 0,
+        "countrycodes": "us",
+        "viewbox":      _VIEWBOX,
+        "bounded":      1,
+    }
+
     try:
-        resp = requests.get(
-            f"{NOMINATIM_URL}/search",
-            params=params,
-            headers=headers,
-            timeout=10,
-        )
+        resp = requests.get(f"{NOMINATIM_URL}/search", params=params,
+                            headers=headers, timeout=10)
         resp.raise_for_status()
         results = resp.json()
     except Exception as exc:
@@ -106,26 +340,19 @@ def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, fl
         _cache[cache_key] = None
         return None
 
+    # If bounded returns nothing, try without bounding (but still validate)
     if not results:
-        # Try again without bounded — sometimes the bbox is too tight
-        # for cross-street or named location queries
         params["bounded"] = 0
         try:
-            resp = requests.get(
-                f"{NOMINATIM_URL}/search",
-                params=params,
-                headers=headers,
-                timeout=10,
-            )
+            resp = requests.get(f"{NOMINATIM_URL}/search", params=params,
+                                headers=headers, timeout=10)
             results = resp.json()
         except Exception:
             pass
 
-    # Find first result inside Hampton Roads
     for r in results:
         try:
-            lat = float(r["lat"])
-            lon = float(r["lon"])
+            lat, lon = float(r["lat"]), float(r["lon"])
             if _in_hampton_roads(lat, lon):
                 log.info("Geocoded %r → (%.5f, %.5f)", address, lat, lon)
                 _cache[cache_key] = (lat, lon)

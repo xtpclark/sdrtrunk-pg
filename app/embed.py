@@ -153,20 +153,34 @@ def get_embedding(text: str) -> list[float] | None:
 # -----------------------------------------------------------------------
 
 ENTITY_PROMPT = """\
-You are a dispatcher radio transcript analyzer. Extract entities from the transcript below.
+You are a Norfolk, Virginia dispatcher radio transcript analyzer. Extract entities from the transcript below.
 
-Return ONLY a JSON array. Each item must have:
+Return ONLY a valid JSON array. Each item must have:
   - "entity_type": one of "address", "unit", "code", "location"
-  - "value": the extracted text exactly as spoken
+  - "value": cleaned, normalized text (see rules below)
   - "confidence": float 0.0-1.0
 
-Rules:
-- "address": street addresses, intersections, cross-streets (e.g. "100 Main Street", "Main and Elm")
-- "unit": radio unit IDs, badge numbers, apparatus IDs (e.g. "Unit 4", "Engine 7", "Badge 1234")
-- "code": police/fire/EMS codes (e.g. "10-4", "Signal 31", "Code 3", "Structure fire")
-- "location": named locations without a street address (e.g. "Norfolk Airport", "ODU campus")
+RULES:
 
-Return [] if nothing relevant is found. No explanation, just the JSON array.
+"address" — street addresses and intersections. NORMALIZE before extracting:
+  - Expand abbreviations: "Ave"→"Avenue", "Blvd"→"Boulevard", "St"→"Street", "Rd"→"Road",
+    "Dr"→"Drive", "Ln"→"Lane", "Ct"→"Court", "Hwy"→"Highway", "N"→"North", "S"→"South",
+    "E"→"East", "W"→"West", "NB"→"North", "SB"→"South"
+  - Format intersections as "STREET1 and STREET2" (e.g. "Church Street and Johnson Avenue")
+  - Include apartment/unit if spoken (e.g. "827 Norview Avenue Apartment 311")
+  - Common Norfolk streets: Granby, Colley, Hampton Blvd, Military Hwy, Little Creek Rd,
+    Tidewater Dr, Brambleton Ave, Princess Anne Rd, Monticello Ave, Azalea Garden Rd
+  - SKIP if Whisper clearly hallucinated (nonsense words, phonetic artifacts, "different street")
+  - SKIP pure named locations like "the mall" or "the stadium" — use "location" type instead
+
+"unit" — radio unit IDs, apparatus, badge numbers (e.g. "Unit 4", "Engine 7", "Medic 16", "Badge 1234")
+
+"code" — police/fire/EMS codes (e.g. "10-4", "Signal 31", "Code 3", "10-50", "46-year-old female")
+
+"location" — named places without a full address (e.g. "Norfolk International Airport", "ODU campus",
+  "NSO Courts", "Norfolk Naval Station", "MacArthur Center")
+
+Return [] if nothing useful. No markdown, no explanation — only the raw JSON array.
 
 Transcript:
 {transcript}

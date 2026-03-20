@@ -313,11 +313,129 @@ def map_stats():
             for r in cur.fetchall()
         ]
 
+        # ── Urgent incident ──────────────────────────────────────────────
+        # Score = (fire_ems_bonus * 5) + calls_last_5min * 3 + unit_count
+        # Only active incidents with activity in last 15 min qualify.
+        cur.execute(
+            """
+            SELECT
+                i.id,
+                i.address,
+                i.category,
+                i.call_count,
+                i.unit_count,
+                i.status,
+                i.opened_at AT TIME ZONE 'America/New_York' AS opened_at,
+                i.last_activity AT TIME ZONE 'America/New_York' AS last_activity,
+                CASE WHEN i.has_location THEN ST_Y(i.location) ELSE NULL END AS lat,
+                CASE WHEN i.has_location THEN ST_X(i.location) ELSE NULL END AS lon,
+                COALESCE((
+                    SELECT COUNT(*) FROM incident_calls ic2
+                    JOIN calls c2 ON c2.id = ic2.call_id
+                    WHERE ic2.incident_id = i.id
+                      AND c2.ts > now() - interval '5 minutes'
+                ), 0) AS calls_last_5min,
+                CASE WHEN i.category ILIKE '%fire%' OR i.category ILIKE '%ems%'
+                     THEN 1 ELSE 0 END AS is_fire_ems,
+                (
+                    SELECT c3.transcript
+                    FROM incident_calls ic3
+                    JOIN calls c3 ON c3.id = ic3.call_id
+                    WHERE ic3.incident_id = i.id AND c3.transcript IS NOT NULL
+                    ORDER BY c3.ts DESC LIMIT 1
+                ) AS last_transcript,
+                (
+                    SELECT COALESCE(t2.alpha_tag, c4.tg::text)
+                    FROM incident_calls ic4
+                    JOIN calls c4 ON c4.id = ic4.call_id
+                    LEFT JOIN talkgroups t2 ON t2.tg_decimal = c4.tg
+                    WHERE ic4.incident_id = i.id
+                    ORDER BY c4.ts DESC LIMIT 1
+                ) AS last_alpha_tag
+            FROM incidents i
+            WHERE i.status = 'active'
+              AND i.last_activity > now() - interval '15 minutes'
+              AND i.call_count <= 100
+            ORDER BY
+                (CASE WHEN i.category ILIKE '%fire%' OR i.category ILIKE '%ems%'
+                      THEN 5 ELSE 0 END)
+                + COALESCE((
+                    SELECT COUNT(*) FROM incident_calls ic2
+                    JOIN calls c2 ON c2.id = ic2.call_id
+                    WHERE ic2.incident_id = i.id
+                      AND c2.ts > now() - interval '5 minutes'
+                  ), 0) * 3
+                + i.unit_count
+                DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        urgent_incident = None
+        if row:
+            urgent_incident = {
+                "id":             row["id"],
+                "address":        row["address"],
+                "category":       row["category"],
+                "call_count":     row["call_count"],
+                "unit_count":     row["unit_count"],
+                "calls_last_5min":row["calls_last_5min"],
+                "is_fire_ems":    bool(row["is_fire_ems"]),
+                "last_activity":  row["last_activity"].isoformat() if row["last_activity"] else None,
+                "opened_at":      row["opened_at"].isoformat() if row["opened_at"] else None,
+                "lat":            row["lat"],
+                "lon":            row["lon"],
+                "last_transcript":row["last_transcript"],
+                "last_alpha_tag": row["last_alpha_tag"],
+            }
+
+        # ── Activity histogram (calls per 5-min bucket, last 2h) ────
+        cur.execute("""
+            SELECT
+                date_trunc('hour', ts AT TIME ZONE 'America/New_York')
+                  + floor(extract(minute FROM ts AT TIME ZONE 'America/New_York') / 5)
+                    * interval '5 minutes' AS bucket,
+                count(*) AS calls,
+                count(*) FILTER (WHERE t.category ILIKE '%police%') AS police,
+                count(*) FILTER (WHERE t.category ILIKE '%fire%' OR t.category ILIKE '%ems%') AS fire_ems
+            FROM calls c
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            WHERE c.ts >= now() - interval '2 hours'
+            GROUP BY bucket
+            ORDER BY bucket
+        """)
+        histogram = [
+            {
+                "bucket": r["bucket"].isoformat(),
+                "calls":  r["calls"],
+                "police": r["police"],
+                "fire_ems": r["fire_ems"],
+            }
+            for r in cur.fetchall()
+        ]
+
+        # ── Top talkgroups (last 2h) ──────────────────────────────
+        cur.execute("""
+            SELECT coalesce(t.alpha_tag, c.tg::text) AS tg,
+                   t.category,
+                   count(*) AS calls
+            FROM calls c
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            WHERE c.ts >= now() - interval '2 hours'
+            GROUP BY t.alpha_tag, c.tg, t.category
+            ORDER BY calls DESC
+            LIMIT 8
+        """)
+        top_tgs = [dict(r) for r in cur.fetchall()]
+
     return jsonify(
         {
-            "calls_today":    calls_today,
+            "calls_today":       calls_today,
             "active_talkgroups": active_tgs,
-            "last_call_ts":   last_call_ts,
-            "recent_alerts":  recent_alerts,
+            "last_call_ts":      last_call_ts,
+            "recent_alerts":     recent_alerts,
+            "urgent_incident":   urgent_incident,
+            "histogram":         histogram,
+            "top_tgs":           top_tgs,
         }
     )

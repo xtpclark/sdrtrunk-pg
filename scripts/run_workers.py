@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -22,6 +23,25 @@ from pathlib import Path
 
 # Make project root importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# ── PID lockfile — prevents multiple worker instances ────────────────────
+_PIDFILE = Path("/tmp/sdrtrunk-workers.pid")
+
+def _check_pidfile():
+    if _PIDFILE.exists():
+        try:
+            old_pid = int(_PIDFILE.read_text().strip())
+            # Check if that process is actually running
+            os.kill(old_pid, 0)
+            print(f"ERROR: Workers already running as PID {old_pid}. Exiting.", file=sys.stderr)
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            # PID file stale — process is gone, safe to proceed
+            _PIDFILE.unlink(missing_ok=True)
+    _PIDFILE.write_text(str(os.getpid()))
+
+def _remove_pidfile():
+    _PIDFILE.unlink(missing_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +110,7 @@ def start_alert_worker():
 def _handle_signal(signum, frame):
     sig_name = signal.Signals(signum).name
     log.info("Received %s — shutting down…", sig_name)
+    _remove_pidfile()
     _shutdown.set()
 
 
@@ -98,8 +119,12 @@ def _handle_signal(signum, frame):
 # -----------------------------------------------------------------------
 
 def main():
+    _check_pidfile()
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    import atexit
+    atexit.register(_remove_pidfile)
 
     threads = [
         start_transcription_worker(),
