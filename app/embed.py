@@ -296,51 +296,54 @@ def embed_call(call_id: int):
 
 
 def extract_entities(call_id: int):
-    """Run entity extraction on transcript, insert into call_entities."""
+    """
+    Run entity extraction on transcript (if present) and thread the call
+    into an incident. Incident threading always runs — even for calls with
+    no transcript — because TG and radio_id matching doesn't need text.
+    """
     with db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT transcript FROM calls WHERE id = %s", (call_id,))
         row = cur.fetchone()
 
-    if not row or not row["transcript"]:
+    if not row:
         return
 
-    transcript = row["transcript"].strip()
-    if len(transcript) < 5:
-        return
+    transcript = (row["transcript"] or "").strip()
 
-    entities = get_entities(transcript)
-    if not entities:
-        log.info("extract_entities: no entities for call %d", call_id)
-        return
+    # Entity extraction only makes sense for meaningful transcripts
+    if len(transcript) >= 5:
+        entities = get_entities(transcript)
+        if entities:
+            with db() as conn:
+                cur = conn.cursor()
+                for ent in entities:
+                    entity_type = ent.get("entity_type", "unknown")
+                    value       = ent.get("value", "")
+                    confidence  = float(ent.get("confidence", 0.0))
+                    if not value:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO call_entities (call_id, entity_type, value, confidence)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (call_id, entity_type, value, confidence),
+                    )
+            log.info("Extracted %d entities for call %d via %s", len(entities), call_id, ENTITY_PROVIDER)
 
-    with db() as conn:
-        cur = conn.cursor()
-        for ent in entities:
-            entity_type = ent.get("entity_type", "unknown")
-            value       = ent.get("value", "")
-            confidence  = float(ent.get("confidence", 0.0))
-            if not value:
-                continue
-            cur.execute(
-                """
-                INSERT INTO call_entities (call_id, entity_type, value, confidence)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (call_id, entity_type, value, confidence),
-            )
+            # Geocode address entities
+            from app.geocode import geocode_call_entities
+            try:
+                geocode_call_entities(call_id)
+            except Exception as exc:
+                log.error("Geocoding failed for call %d: %s", call_id, exc)
+        else:
+            log.debug("extract_entities: no entities for call %d", call_id)
 
-    log.info("Extracted %d entities for call %d via %s", len(entities), call_id, ENTITY_PROVIDER)
-
-    # Trigger geocoding for address entities
-    from app.geocode import geocode_call_entities
-    try:
-        geocode_call_entities(call_id)
-    except Exception as exc:
-        log.error("Geocoding failed for call %d: %s", call_id, exc)
-
-    # Incident threading — group related calls into incidents
+    # Incident threading — ALWAYS runs regardless of transcript content.
+    # TG window and radio_id matching work on metadata alone.
     from app.incidents import process_call_for_incidents
     try:
         process_call_for_incidents(call_id)
