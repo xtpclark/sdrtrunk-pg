@@ -183,7 +183,7 @@ RULES:
     "Dr"→"Drive", "Ln"→"Lane", "Ct"→"Court", "Hwy"→"Highway", "N"→"North", "S"→"South",
     "E"→"East", "W"→"West", "NB"→"North", "SB"→"South"
   - Format intersections as "STREET1 and STREET2" (e.g. "Church Street and Johnson Avenue")
-  - Include apartment/unit if spoken (e.g. "827 Norview Avenue Apartment 311")
+  - Include apartment/unit if spoken (e.g. "827 Main Avenue Apartment 311")
 {"  - Common streets: " + streets_hint if streets_hint else ""}
   - SKIP if Whisper clearly hallucinated (nonsense words, phonetic artifacts, "different street")
   - SKIP pure named locations like "the mall" or "the stadium" — use "location" type instead

@@ -86,7 +86,7 @@ def _tg_find(cur, tg, ts, window=3, call_lat=None, call_lon=None):
 
     If both the candidate incident and the incoming call have geocoded
     locations, verify they're within 1km. This prevents dispatch channels
-    (e.g. NPD Adm/Tow) from merging sequential unrelated calls that happen
+    from merging sequential unrelated calls that happen
     to be on the same TG within the time window.
     """
     cur.execute("""

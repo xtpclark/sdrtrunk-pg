@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Backfill geocoding for all address entities that don't have lat/lon yet.
-Also clears obviously wrong geocodes (outside Hampton Roads bbox).
+Also clears geocodes outside the configured city bbox.
 
 Usage:
     python scripts/backfill_geocode.py [--dry-run]
@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.db import db
-from app.geocode import geocode, _in_hampton_roads
+from app.geocode import geocode, _in_bbox
 
 def main():
     parser = argparse.ArgumentParser()
@@ -27,7 +27,7 @@ def main():
               AND entity_type = 'address'
         """)
         bad = [(r["id"], r["value"]) for r in cur.fetchall()
-               if not _in_hampton_roads(r["lat"], r["lon"])]
+               if not _in_bbox(r["lat"], r["lon"])]
 
     if bad:
         print(f"Clearing {len(bad)} out-of-bbox geocodes:")
@@ -74,7 +74,7 @@ def main():
             print(f"  ✗ {ent['value']!r}")
             failed += 1
 
-    print(f"\nDone: {geocoded} geocoded, {failed} not found in Hampton Roads")
+    print(f"\nDone: {geocoded} geocoded, {failed} not found in city bbox")
 
 if __name__ == "__main__":
     main()

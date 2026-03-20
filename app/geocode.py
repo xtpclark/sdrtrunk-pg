@@ -1,15 +1,15 @@
 """
-Nominatim geocoder with Hampton Roads bounding box enforcement.
+Nominatim geocoder with City bounding box enforcement.
 
 Rate-limited to 1 req/sec per Nominatim ToS.
 In-memory address cache to avoid re-querying the same string.
 
 Changes from v1:
 - Only geocodes 'address' entities (not 'location' — too ambiguous)
-- Appends ", Norfolk, VA" context to improve disambiguation
-- bounded=1 forces results inside Hampton Roads bbox
+- Appends city context to improve disambiguation
+- bounded=1 forces results inside city bbox
 - countrycodes=us to prevent overseas matches
-- Validates result is actually inside Hampton Roads bbox
+- Validates result is inside city bbox
 
 Usage:
     from app.geocode import geocode, geocode_call_entities
@@ -92,7 +92,7 @@ _ABBREV = [
     (r'\bwb\b',               'West'),
 ]
 
-# Known Whisper mis-transcriptions of Hampton Roads street names
+# Street name corrections — loaded from city config
 # Street name corrections — loaded from city config (data/cities/{slug}/street_corrections.json)
 _CORRECTIONS = CITY_CORRECTIONS
 
@@ -134,10 +134,15 @@ def _geocode_intersection(street1: str, street2: str) -> Optional[Tuple[float, f
     cross-street lookups better than the freeform q= parameter.
     """
     _rate_limit()
+    # Derive city/state from CITY_GEOCODE_CONTEXT (e.g. "Norfolk, VA")
+    _ctx_parts = _CITY_CONTEXT.split(",")
+    _ctx_city  = _ctx_parts[0].strip() if _ctx_parts else ""
+    _ctx_state = _ctx_parts[1].strip() if len(_ctx_parts) > 1 else ""
+
     params = {
         "street": f"{street1} and {street2}",
-        "city": "Norfolk",
-        "state": "VA",
+        "city": _ctx_city,
+        "state": _ctx_state,
         "country": "US",
         "format": "json",
         "limit": 3,
@@ -249,11 +254,11 @@ def _local_intersection(street1: str, street2: str) -> Optional[Tuple[float, flo
 
 def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, float]]:
     """
-    Geocode an address string, biased and bounded to Hampton Roads.
+    Geocode an address string, biased and bounded to the configured city.
 
     Returns (lat, lon) or None. Results are cached in-process.
     Handles:
-      - Street addresses: "827 Norview Avenue"
+      - Street addresses: "827 Main Avenue"
       - Intersections:    "Church Street and Johnson Avenue"
       - Normalizes abbreviations and known Whisper transcription errors
     """
@@ -373,7 +378,7 @@ def geocode_call_entities(call_id: int):
         if result:
             updates.append((result[0], result[1], ent["id"]))
         else:
-            log.debug("No Hampton Roads geocode for %r (call %d)", ent["value"], call_id)
+            log.debug("No geocode for %r (call %d)", ent["value"], call_id)
 
     if not updates:
         return
