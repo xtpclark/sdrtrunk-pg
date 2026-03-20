@@ -23,22 +23,22 @@ from typing import Optional, Tuple
 
 import requests
 
-from app.config import NOMINATIM_URL, NOMINATIM_VIEWBOX
+from app.config import (
+    NOMINATIM_URL, NOMINATIM_VIEWBOX,
+    CITY_BBOX, CITY_GEOCODE_CONTEXT, CITY_CORRECTIONS,
+)
 from app.db import db
 
 log = logging.getLogger(__name__)
 
-# Hampton Roads bounding box: sw_lon, sw_lat, ne_lon, ne_lat
-_BBOX_SW_LON = -76.9
-_BBOX_SW_LAT = 36.5
-_BBOX_NE_LON = -75.9
-_BBOX_NE_LAT = 37.3
+# Bounding box — from city config
+_BBOX_SW_LON, _BBOX_SW_LAT, _BBOX_NE_LON, _BBOX_NE_LAT = CITY_BBOX
 
 # Nominatim viewbox format: left,top,right,bottom (lon_min, lat_max, lon_max, lat_min)
 _VIEWBOX = f"{_BBOX_SW_LON},{_BBOX_NE_LAT},{_BBOX_NE_LON},{_BBOX_SW_LAT}"
 
-# City context appended to improve disambiguation
-_CITY_CONTEXT = "Norfolk, VA"
+# City context for geocoding disambiguation — from city config
+_CITY_CONTEXT = CITY_GEOCODE_CONTEXT
 
 # In-memory cache: normalized_address → (lat, lon) or None
 _cache: dict[str, Optional[Tuple[float, float]]] = {}
@@ -55,8 +55,8 @@ def _rate_limit():
     _last_request_time = time.monotonic()
 
 
-def _in_hampton_roads(lat: float, lon: float) -> bool:
-    """Validate result is inside Hampton Roads bounding box."""
+def _in_bbox(lat: float, lon: float) -> bool:
+    """Validate result is inside the city bounding box."""
     return (_BBOX_SW_LAT <= lat <= _BBOX_NE_LAT and
             _BBOX_SW_LON <= lon <= _BBOX_NE_LON)
 
@@ -87,40 +87,8 @@ _ABBREV = [
 ]
 
 # Known Whisper mis-transcriptions of Hampton Roads street names
-# Street name corrections: map wrong/partial → correct base name (NO suffix here —
-# the abbreviation expander will add/correct suffixes after).
-# These replace the misheard portion only, preserving surrounding text.
-_CORRECTIONS = {
-    'isaiah garden':           'Azalea Garden',    # Whisper hallucination for Azalea Garden Rd
-    'azalea garden road':      'Azalea Garden Road',
-    'azalea garden':           'Azalea Garden',
-    'little creek road':       'Little Creek Road',
-    'little creek':            'Little Creek',
-    'north military highway':  'North Military Highway',
-    'south military highway':  'South Military Highway',
-    'military highway':        'Military Highway',
-    'north military':          'North Military Highway',
-    'south military':          'South Military Highway',
-    'hampton boulevard':       'Hampton Boulevard',
-    'virginia beach boulevard':'Virginia Beach Boulevard',
-    'terminal boulevard':      'Terminal Boulevard',
-    'tidewater drive':         'Tidewater Drive',
-    'tidewater':               'Tidewater Drive',
-    'brambleton avenue':       'Brambleton Avenue',
-    'brambleton':              'Brambleton Avenue',
-    'monticello avenue':       'Monticello Avenue',
-    'monticello':              'Monticello Avenue',
-    'princess anne road':      'Princess Anne Road',
-    'princess anne':           'Princess Anne Road',
-    'granby street':           'Granby Street',
-    'granby':                  'Granby Street',
-    'colley avenue':           'Colley Avenue',
-    'colley':                  'Colley Avenue',
-    'norview avenue':          'Norview Avenue',
-    'norview':                 'Norview Avenue',
-    'church street':           'Church Street',
-    'johnson avenue':          'Johnson Avenue',
-}
+# Street name corrections — loaded from city config (data/cities/{slug}/street_corrections.json)
+_CORRECTIONS = CITY_CORRECTIONS
 
 import re as _re
 
@@ -178,7 +146,7 @@ def _geocode_intersection(street1: str, street2: str) -> Optional[Tuple[float, f
         for r in results:
             try:
                 lat, lon = float(r["lat"]), float(r["lon"])
-                if _in_hampton_roads(lat, lon):
+                if _in_bbox(lat, lon):
                     return (lat, lon)
             except (KeyError, ValueError):
                 continue
@@ -353,7 +321,7 @@ def geocode(address: str, city_context: bool = True) -> Optional[Tuple[float, fl
     for r in results:
         try:
             lat, lon = float(r["lat"]), float(r["lon"])
-            if _in_hampton_roads(lat, lon):
+            if _in_bbox(lat, lon):
                 log.info("Geocoded %r → (%.5f, %.5f)", address, lat, lon)
                 _cache[cache_key] = (lat, lon)
                 return (lat, lon)

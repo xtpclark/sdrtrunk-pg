@@ -62,10 +62,15 @@ def receive_call():
         lon_raw   = request.form.get("lon")
         lat       = float(lat_raw) if lat_raw else None
         lon       = float(lon_raw) if lon_raw else None
-        # Sanity-check coordinates (Hampton Roads bounding box + some margin)
-        if lat is not None and not (35.0 <= lat <= 38.5 and -77.5 <= lon <= -74.5):
-            log.warning("GPS out of bounds lat=%.5f lon=%.5f — discarding", lat, lon)
-            lat = lon = None
+        # Sanity-check coordinates against city bbox (with 0.5° margin)
+        if lat is not None:
+            from app.config import CITY_BBOX
+            sw_lon, sw_lat, ne_lon, ne_lat = CITY_BBOX
+            margin = 0.5
+            if not (sw_lat - margin <= lat <= ne_lat + margin and
+                    sw_lon - margin <= lon <= ne_lon + margin):
+                log.warning("GPS out of city bbox lat=%.5f lon=%.5f — discarding", lat, lon)
+                lat = lon = None
     except (ValueError, TypeError) as exc:
         log.error("Bad form fields: %s", exc)
         return jsonify({"error": "bad request", "detail": str(exc)}), 400

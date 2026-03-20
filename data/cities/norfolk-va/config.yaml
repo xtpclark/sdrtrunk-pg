@@ -1,0 +1,64 @@
+# City configuration for Norfolk, Virginia — Hampton Roads P25
+# This file drives geocoding, entity extraction, and map display.
+# To deploy for a different city, create data/cities/{slug}/config.yaml
+# and set CITY_CONFIG=data/cities/{slug}/config.yaml in your .env
+
+name: "Norfolk, VA"
+slug: "norfolk-va"
+state: "VA"
+country: "US"
+timezone: "America/New_York"
+
+# Map default center and zoom [lat, lon]
+map_center: [36.8508, -76.2859]
+map_zoom: 12
+
+# Bounding box for geocoding validation and GPS sanity check
+# [sw_lon, sw_lat, ne_lon, ne_lat]
+bbox: [-76.9, 36.5, -75.9, 37.3]
+
+# Nominatim geocoding context appended to freeform queries
+geocode_context: "Norfolk, VA"
+
+# Entity extraction context injected into the LLM prompt
+entity_context: "Norfolk, Virginia"
+
+# Address database — city open data source
+address_db:
+  source: socrata                          # socrata | arcgis | csv
+  url: "https://data.norfolk.gov/resource/ere7-kake.csv"
+  params:
+    "$limit": 100000
+    "$select": "full_address,house_number,full_street_name,street_name,street_type,predirectional,parcel_centroid_latitude,parcel_centroid_longitude"
+    "$where": "full_address!='NO ADDRESS' AND parcel_centroid_latitude IS NOT NULL"
+  fields:
+    full_address: full_address
+    house_number: house_number
+    street_name:  street_name
+    street_type:  street_type
+    predirectional: predirectional
+    full_street:  full_street_name
+    lat:          parcel_centroid_latitude
+    lon:          parcel_centroid_longitude
+  city_value: "Norfolk"                    # stored in address_db.city
+
+# Additional cities to load into address_db (same P25 system coverage)
+# Each entry follows the same address_db schema above
+additional_cities:
+  - name: "Virginia Beach"
+    source: arcgis
+    url: "https://gis.data.vbgov.com/datasets/address-points/FeatureServer/0/query"
+    params:
+      where: "1=1"
+      outFields: "FULLADDRESS,ADDNUM,STREETNAME,STREETTYPE,X,Y"
+      returnGeometry: false
+      f: json
+      resultRecordCount: 150000
+    fields:
+      full_address: FULLADDRESS
+      house_number: ADDNUM
+      street_name:  STREETNAME
+      street_type:  STREETTYPE
+      lat:          Y
+      lon:          X
+    city_value: "Virginia Beach"

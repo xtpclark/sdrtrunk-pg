@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Hampton Roads Command Center</title>
+  <title>{{ city_name }} Command Center</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     /* ═══ DESIGN TOKENS ════════════════════════════════════════════ */
@@ -501,8 +501,8 @@
   <a id="hdr-logo" href="#">
     <span class="logo-icon">📡</span>
     <div>
-      <div class="logo-text">Hampton Roads Command</div>
-      <div class="logo-sub">Norfolk P25 · Live</div>
+      <div class="logo-text">{{ city_name }} Command</div>
+      <div class="logo-sub">P25 Scanner · Live</div>
     </div>
   </a>
 
@@ -678,7 +678,8 @@
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════
-const NORFOLK    = [36.8508, -76.2859];
+const MAP_CENTER = {{ map_center | tojson }};
+const MAP_ZOOM   = {{ map_zoom }};
 const CAT_COLOR  = {
   'police':'#3b82f6','fire':'#ef4444','ems':'#f97316','military':'#a855f7',
   'government':'#eab308','city-services':'#14b8a6','transportation':'#06b6d4',
@@ -709,7 +710,7 @@ let _lastThreads  = null;
 let searchActive  = false;
 
 // ═══ MAP INIT ═════════════════════════════════════════════════
-const map = L.map('map',{center:NORFOLK,zoom:12,preferCanvas:true,zoomControl:true});
+const map = L.map('map',{center:MAP_CENTER,zoom:MAP_ZOOM,preferCanvas:true,zoomControl:true});
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19
 }).addTo(map);

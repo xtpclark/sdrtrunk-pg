@@ -152,8 +152,17 @@ def get_embedding(text: str) -> list[float] | None:
 # Entity extraction
 # -----------------------------------------------------------------------
 
-ENTITY_PROMPT = """\
-You are a Norfolk, Virginia dispatcher radio transcript analyzer. Extract entities from the transcript below.
+def _build_entity_prompt() -> str:
+    """Build the entity extraction prompt from city config."""
+    from app.config import CITY_ENTITY_CONTEXT, CITY_LANDMARKS, CITY
+    landmarks_sample = ", ".join(f'"{l}"' for l in CITY_LANDMARKS[:8])
+    # Pull a few well-known street names from corrections for the hint
+    corrections = CITY.get("street_corrections", {})
+    known_streets = list({v.split()[0] for v in corrections.values()
+                          if len(v.split()) <= 3})[:10]
+    streets_hint = ", ".join(known_streets) if known_streets else ""
+    return f"""\
+You are a {CITY_ENTITY_CONTEXT} dispatcher radio transcript analyzer. Extract entities from the transcript below.
 
 Return ONLY a valid JSON array. Each item must have:
   - "entity_type": one of "address", "unit", "code", "location"
@@ -168,8 +177,7 @@ RULES:
     "E"→"East", "W"→"West", "NB"→"North", "SB"→"South"
   - Format intersections as "STREET1 and STREET2" (e.g. "Church Street and Johnson Avenue")
   - Include apartment/unit if spoken (e.g. "827 Norview Avenue Apartment 311")
-  - Common Norfolk streets: Granby, Colley, Hampton Blvd, Military Hwy, Little Creek Rd,
-    Tidewater Dr, Brambleton Ave, Princess Anne Rd, Monticello Ave, Azalea Garden Rd
+{"  - Common streets: " + streets_hint if streets_hint else ""}
   - SKIP if Whisper clearly hallucinated (nonsense words, phonetic artifacts, "different street")
   - SKIP pure named locations like "the mall" or "the stadium" — use "location" type instead
 
@@ -177,14 +185,15 @@ RULES:
 
 "code" — police/fire/EMS codes (e.g. "10-4", "Signal 31", "Code 3", "10-50", "46-year-old female")
 
-"location" — named places without a full address (e.g. "Norfolk International Airport", "ODU campus",
-  "NSO Courts", "Norfolk Naval Station", "MacArthur Center")
+"location" — named places without a full address (e.g. {landmarks_sample})
 
 Return [] if nothing useful. No markdown, no explanation — only the raw JSON array.
 
 Transcript:
-{transcript}
+{{transcript}}
 """
+
+ENTITY_PROMPT = _build_entity_prompt()
 
 
 def _entity_gemini(transcript: str) -> list[dict]:

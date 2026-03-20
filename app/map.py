@@ -11,6 +11,7 @@ import logging
 
 from flask import Blueprint, jsonify, render_template, request
 
+from app.config import CITY_NAME, CITY_MAP_CENTER, CITY_MAP_ZOOM
 from app.db import db
 
 log = logging.getLogger(__name__)
@@ -19,7 +20,12 @@ bp = Blueprint("map", __name__)
 
 @bp.route("/map")
 def map_page():
-    return render_template("map.html")
+    return render_template(
+        "map.html",
+        city_name=CITY_NAME,
+        map_center=CITY_MAP_CENTER,
+        map_zoom=CITY_MAP_ZOOM,
+    )
 
 
 @bp.route("/map/heatmap")
