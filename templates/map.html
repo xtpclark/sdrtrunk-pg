@@ -486,10 +486,29 @@
     .bdg-other         { background:rgba(107,114,128,.2); color:#d1d5db; }
 
     /* ═══ ALERT BAR ════════════════════════════════════════════════ */
-    #alert-bar { display:none; background:rgba(127,29,29,.9); color:#fecaca;
-                 padding:5px 16px; font-size:12px; font-weight:500;
-                 cursor:pointer; flex-shrink:0; backdrop-filter:blur(4px); }
-    #alert-bar:hover { background:rgba(153,27,27,.9); }
+    #alert-bar {
+      display:none; flex-shrink:0;
+      background:rgba(127,29,29,.95); color:#fecaca;
+      border-bottom:1px solid rgba(248,81,73,.4);
+      backdrop-filter:blur(4px);
+    }
+    .alert-item {
+      display:flex; align-items:center; gap:10px;
+      padding:5px 14px; border-bottom:1px solid rgba(248,81,73,.2);
+      cursor:pointer; transition:background .12s;
+    }
+    .alert-item:last-child { border-bottom:none; }
+    .alert-item:hover { background:rgba(248,81,73,.15); }
+    .alert-icon  { font-size:14px; flex-shrink:0; }
+    .alert-body  { flex:1; min-width:0; }
+    .alert-msg   { font-size:11px; font-weight:600; white-space:nowrap;
+                   overflow:hidden; text-overflow:ellipsis; }
+    .alert-meta  { font-size:10px; color:#f87171; }
+    .alert-action{ font-size:10px; color:#fca5a5; font-style:italic;
+                   white-space:nowrap; flex-shrink:0; }
+    .alert-dismiss { font-size:14px; color:#f87171; cursor:pointer;
+                     padding:0 4px; flex-shrink:0; line-height:1; }
+    .alert-dismiss:hover { color:#fff; }
 
     #audio-player { display:none; }
   </style>
@@ -568,8 +587,8 @@
 </div>
 
 <!-- ── ALERT BAR ───────────────────────────────────────────────── -->
-<div id="alert-bar" onclick="this.style.display='none'">
-  ⚠ <span id="alert-txt"></span> · click to dismiss
+<div id="alert-bar">
+  <div id="alert-items"></div>
 </div>
 
 <!-- ── BODY ────────────────────────────────────────────────────── -->
@@ -1021,10 +1040,7 @@ async function refreshStats() {
     document.getElementById('v-rate').textContent = (callTimes.length/5).toFixed(1);
 
     // Alerts
-    if (data.recent_alerts?.length) {
-      document.getElementById('alert-txt').textContent = data.recent_alerts[0].message;
-      document.getElementById('alert-bar').style.display='block';
-    }
+    if (data.recent_alerts?.length) renderAlerts(data.recent_alerts);
 
     // Priority card
     renderPriorityCard(data.urgent_incident);
@@ -1037,6 +1053,81 @@ async function refreshStats() {
     }
 
   } catch(e) { console.warn('stats',e); }
+}
+
+// ═══ ALERT BAR ════════════════════════════════════════════════
+const _dismissedAlerts = new Set();
+
+function renderAlerts(alerts) {
+  const bar   = document.getElementById('alert-bar');
+  const items = document.getElementById('alert-items');
+
+  const active = alerts.filter(a => !_dismissedAlerts.has(a.id));
+  if (!active.length) { bar.style.display = 'none'; return; }
+
+  bar.style.display = 'block';
+  items.innerHTML = active.map(a => {
+    const isSpike   = a.rule_type === 'volume_spike';
+    const icon      = isSpike ? '📈' : '🚨';
+    const actionTxt = a.incident_id
+      ? `→ View incident`
+      : a.tg ? `→ Filter to ${a.alpha_tag || 'TG ' + a.tg}` : '';
+    const ago = a.fired_at ? fmtAgo(a.fired_at) : '';
+
+    return `<div class="alert-item" onclick="onAlertClick(${a.id},${a.incident_id||'null'},${a.tg||'null'})">
+      <span class="alert-icon">${icon}</span>
+      <div class="alert-body">
+        <div class="alert-msg">${a.message}</div>
+        <div class="alert-meta">${a.rule_name || ''} · ${ago}</div>
+      </div>
+      ${actionTxt ? `<span class="alert-action">${actionTxt}</span>` : ''}
+      <span class="alert-dismiss" onclick="event.stopPropagation();dismissAlert(${a.id})">✕</span>
+    </div>`;
+  }).join('');
+}
+
+function onAlertClick(alertId, incidentId, tg) {
+  // If we have an incident → open the detail panel and fly to it
+  if (incidentId) {
+    openDetail(incidentId);
+    // Also scroll the sidebar to that incident card
+    const card = document.getElementById('tc-' + incidentId);
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return;
+  }
+
+  // Volume spike with no incident → filter sidebar to that TG
+  if (tg) {
+    // Switch to incidents tab
+    document.querySelectorAll('.sb-tab').forEach(t => t.classList.remove('on'));
+    document.querySelector('.sb-tab[data-tab="incidents"]').classList.add('on');
+    activeTab = 'incidents';
+    document.getElementById('incidents-panel').style.display = 'block';
+    document.getElementById('stats-panel').classList.remove('on');
+    document.getElementById('search-panel').classList.remove('on');
+
+    // Flash the feed rows for this TG
+    document.querySelectorAll('.fr').forEach(el => {
+      const isTg = el.dataset.tg == tg;
+      el.style.transition = 'background .1s';
+      el.style.background = isTg ? 'rgba(248,81,73,.15)' : '';
+      if (isTg) setTimeout(() => el.style.background = '', 2000);
+    });
+
+    // Run a search for this TG's recent calls
+    searchInput.value = '';
+  }
+}
+
+function dismissAlert(alertId) {
+  _dismissedAlerts.add(alertId);
+  // Re-render immediately with this alert removed
+  const bar = document.getElementById('alert-bar');
+  const item = bar.querySelector(`[onclick*="dismissAlert(${alertId})"]`)?.closest('.alert-item');
+  if (item) item.remove();
+  if (!document.getElementById('alert-items').children.length) {
+    bar.style.display = 'none';
+  }
 }
 
 // ═══ PRIORITY CARD ════════════════════════════════════════════
@@ -1209,6 +1300,7 @@ async function refreshFeed() {
       el.id    = 'fr-'+row.id;
       el.className = `fr c-${k}`;
       el.dataset.inc = row.incident_id||'';
+      el.dataset.tg  = row.tg||'';
       el.onclick = ()=>{
         if (row.incident_id){ selectThread(row.incident_id,null,null); openDetail(row.incident_id); }
       };

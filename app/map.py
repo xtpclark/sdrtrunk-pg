@@ -301,7 +301,7 @@ def map_stats():
 
         cur.execute(
             """
-            SELECT a.id, a.message, a.fired_at,
+            SELECT a.id, a.message, a.fired_at, a.call_id,
                    r.name AS rule_name, r.rule_type
             FROM alerts a
             LEFT JOIN alert_rules r ON r.id = a.rule_id
@@ -309,16 +309,59 @@ def map_stats():
             LIMIT 5
             """
         )
-        recent_alerts = [
-            {
+        raw_alerts = cur.fetchall()
+
+        # For each alert, resolve the talkgroup and most recent incident
+        recent_alerts = []
+        for r in raw_alerts:
+            alert = {
                 "id":        r["id"],
                 "message":   r["message"],
                 "fired_at":  r["fired_at"].isoformat() if r["fired_at"] else None,
                 "rule_name": r["rule_name"],
                 "rule_type": r["rule_type"],
+                "call_id":   r["call_id"],
+                "tg":        None,
+                "alpha_tag": None,
+                "incident_id": None,
             }
-            for r in cur.fetchall()
-        ]
+
+            # Resolve TG — from call (keyword alerts) or parse message (volume spike)
+            if r["call_id"]:
+                cur.execute("""
+                    SELECT c.tg, t.alpha_tag FROM calls c
+                    LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+                    WHERE c.id = %s
+                """, (r["call_id"],))
+                row = cur.fetchone()
+                if row:
+                    alert["tg"]        = row["tg"]
+                    alert["alpha_tag"] = row["alpha_tag"]
+            elif r["rule_type"] == "volume_spike":
+                # Extract TG from message: "Volume spike on tg 612 (Police):..."
+                import re
+                m = re.search(r'tg (\d+)', r["message"])
+                if m:
+                    alert["tg"] = int(m.group(1))
+                    cur.execute("SELECT alpha_tag FROM talkgroups WHERE tg_decimal = %s", (alert["tg"],))
+                    tg_row = cur.fetchone()
+                    if tg_row:
+                        alert["alpha_tag"] = tg_row["alpha_tag"]
+
+            # Find the most recent active incident involving this TG
+            if alert["tg"]:
+                cur.execute("""
+                    SELECT i.id FROM incidents i
+                    JOIN incident_calls ic ON ic.incident_id = i.id
+                    JOIN calls c ON c.id = ic.call_id
+                    WHERE c.tg = %s AND i.status = 'active'
+                    ORDER BY i.last_activity DESC LIMIT 1
+                """, (alert["tg"],))
+                inc_row = cur.fetchone()
+                if inc_row:
+                    alert["incident_id"] = inc_row["id"]
+
+            recent_alerts.append(alert)
 
         # ── Urgent incident ──────────────────────────────────────────────
         # Score = (fire_ems_bonus * 5) + calls_last_5min * 3 + unit_count
