@@ -314,12 +314,18 @@ def map_stats():
         # For each alert, resolve the talkgroup and most recent incident
         recent_alerts = []
         for r in raw_alerts:
+            # Derive category from message for volume spikes
+            import re as _re
+            cat_match = _re.search(r'\(([^)]+)\)', r["message"]) if r["rule_type"] == "volume_spike" else None
+            derived_category = cat_match.group(1) if cat_match else None
+
             alert = {
                 "id":        r["id"],
                 "message":   r["message"],
                 "fired_at":  r["fired_at"].isoformat() if r["fired_at"] else None,
                 "rule_name": r["rule_name"],
                 "rule_type": r["rule_type"],
+                "category":  derived_category,
                 "call_id":   r["call_id"],
                 "tg":        None,
                 "alpha_tag": None,

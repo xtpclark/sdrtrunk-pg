@@ -1074,11 +1074,17 @@ function renderAlerts(alerts) {
       : a.tg ? `→ Filter to ${a.alpha_tag || 'TG ' + a.tg}` : '';
     const ago = a.fired_at ? fmtAgo(a.fired_at) : '';
 
+    // Use backend-derived category for volume spikes so label is always accurate
+    let ruleLbl = a.rule_name || '';
+    if (isSpike && a.category) {
+      ruleLbl = a.category + ' Volume Spike';
+    }
+
     return `<div class="alert-item" onclick="onAlertClick(${a.id},${a.incident_id||'null'},${a.tg||'null'})">
       <span class="alert-icon">${icon}</span>
       <div class="alert-body">
         <div class="alert-msg">${a.message}</div>
-        <div class="alert-meta">${a.rule_name || ''} · ${ago}</div>
+        <div class="alert-meta">${ruleLbl} · ${ago}</div>
       </div>
       ${actionTxt ? `<span class="alert-action">${actionTxt}</span>` : ''}
       <span class="alert-dismiss" onclick="event.stopPropagation();dismissAlert(${a.id})">✕</span>

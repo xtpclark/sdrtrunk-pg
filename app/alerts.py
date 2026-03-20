@@ -128,7 +128,9 @@ def check_volume_spike(tg: int, category: Optional[str] = None):
 
     baseline = baseline_row["call_count"]
 
-    # Check if any volume_spike rule exists and get its threshold multiplier
+    # Find the most specific matching volume_spike rule for this TG's category.
+    # Rules can optionally set config.category to restrict to a category.
+    # Prefer the most specific (category-matching) rule; fall back to generic.
     with db() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -137,8 +139,13 @@ def check_volume_spike(tg: int, category: Optional[str] = None):
             FROM alert_rules
             WHERE enabled = true
               AND rule_type = 'volume_spike'
+            ORDER BY
+                -- prefer rule whose config.category matches this TG's category
+                CASE WHEN config->>'category' ILIKE %s THEN 0 ELSE 1 END,
+                id
             LIMIT 1
-            """
+            """,
+            (f"%{category}%" if category else "%%",)
         )
         rule = cur.fetchone()
 
@@ -146,7 +153,13 @@ def check_volume_spike(tg: int, category: Optional[str] = None):
         return
 
     config    = rule["config"] or {}
-    threshold = float(config.get("threshold", 2.0))
+    rule_cat  = config.get("category")  # None means "all categories"
+    threshold = float(config.get("threshold_multiplier",
+                      config.get("threshold", 2.0)))
+
+    # If rule has a category filter, only fire if TG category matches
+    if rule_cat and category and rule_cat.lower() not in category.lower():
+        return
 
     if baseline > 0 and current_count >= threshold * baseline:
         msg = (
