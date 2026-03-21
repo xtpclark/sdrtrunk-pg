@@ -407,11 +407,14 @@
     /* Collapsible sections */
     .dp-section-hdr {
       display:flex; align-items:center; gap:6px; cursor:pointer;
-      padding:0; margin-bottom:6px; user-select:none;
+      padding:4px 0; margin-bottom:4px; user-select:none;
+      border-radius:3px; transition:background .1s;
     }
+    .dp-section-hdr:hover { background:rgba(255,255,255,.03); }
     .dp-section-hdr:hover .dp-toggle { color:var(--text); }
-    .dp-toggle { font-size:10px; color:var(--muted); transition:transform .15s; flex-shrink:0; }
+    .dp-toggle { font-size:12px; color:var(--muted); transition:transform .15s; flex-shrink:0; width:14px; text-align:center; }
     .dp-toggle.closed { transform:rotate(-90deg); }
+    .dp-sec-lbl { font-size:9px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; font-weight:700; }
     .dp-section-body { overflow:hidden; max-height:500px; transition:max-height .25s ease; }
     .dp-section-body.closed { max-height:0!important; margin:0; padding:0; }
 
@@ -717,7 +720,7 @@
       <div id="dp-units" style="padding:7px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
         <div class="dp-section-hdr" onclick="toggleSection('units')">
           <span class="dp-toggle" id="tog-units">▾</span>
-          <span id="dp-units-lbl" style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Units on scene</span>
+          <span class="dp-sec-lbl">Units on scene</span>
         </div>
         <div class="dp-section-body" id="body-units">
           <div id="dp-units-inner" style="display:flex;flex-wrap:wrap;gap:4px"></div>
@@ -726,7 +729,7 @@
       <div id="dp-timeline">
         <div class="dp-section-hdr" onclick="toggleSection('timeline')">
           <span class="dp-toggle" id="tog-timeline">▾</span>
-          <span class="tl-title" style="margin:0">Unit Activity Timeline</span>
+          <span class="dp-sec-lbl">Unit Activity Timeline</span>
         </div>
         <div class="dp-section-body" id="body-timeline">
           <div id="dp-tl-rows"></div>
@@ -735,7 +738,7 @@
       <div id="dp-convos">
         <div class="dp-section-hdr" onclick="toggleSection('convos')">
           <span class="dp-toggle" id="tog-convos">▾</span>
-          <span class="cv-title" style="margin:0">Conversations</span>
+          <span class="dp-sec-lbl">Conversations</span>
         </div>
         <div class="dp-section-body" id="body-convos">
           <div id="dp-cv-rows"></div>
