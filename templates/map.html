@@ -463,6 +463,30 @@
                 font-size:11px; padding:2px 7px; border-radius:4px; cursor:pointer; white-space:nowrap; }
     .dp-play:hover { background:var(--lift); }
     .dp-play:disabled { opacity:.2; cursor:not-allowed; }
+    .dp-call.playing { background:rgba(88,166,255,.08); border-left:2px solid var(--blue); }
+    .dp-call.playing .dp-play { background:var(--blue); color:#000; border-color:var(--blue); }
+
+    /* Active unit glow in timeline */
+    .tl-bar.active-glow { animation:activeUnitGlow 1.2s infinite; }
+    @keyframes activeUnitGlow {
+      0%,100% { filter:brightness(1); box-shadow:0 0 0 0 rgba(88,166,255,.6); }
+      50%     { filter:brightness(1.5); box-shadow:0 0 8px 2px rgba(88,166,255,.4); }
+    }
+    .tl-bar.dispatch.active-glow {
+      animation:activeDispatchGlow 1.2s infinite;
+    }
+    @keyframes activeDispatchGlow {
+      0%,100% { filter:brightness(1); box-shadow:0 0 0 0 rgba(210,153,34,.6); }
+      50%     { filter:brightness(1.5); box-shadow:0 0 8px 2px rgba(210,153,34,.4); }
+    }
+
+    /* Active conversation glow */
+    .cv-row.active-conv { background:rgba(88,166,255,.08); border-radius:4px; }
+    .cv-row.active-conv .cv-fill { animation:convBarGlow 1.2s infinite; }
+    @keyframes convBarGlow {
+      0%,100% { filter:brightness(1); }
+      50%     { filter:brightness(1.8); }
+    }
 
     #dp-foot { padding:8px 14px; border-top:1px solid var(--border); flex-shrink:0; }
     #dp-foot-btns { display:flex; gap:8px; }
@@ -471,7 +495,10 @@
       color:var(--blue); font-size:13px; font-weight:600; padding:7px;
       border-radius:5px; cursor:pointer; transition:background .12s; white-space:nowrap;
     }
-    #dp-play-all:hover, #dp-download:hover { background:var(--card2); }
+    #dp-play-all:hover, #dp-download:hover, #dp-stop:hover { background:var(--card2); }
+    #dp-stop { flex:none; width:80px; background:var(--lift); border:1px solid var(--red);
+               color:var(--red); font-size:13px; font-weight:600; padding:7px;
+               border-radius:5px; cursor:pointer; }
     #dp-download.merging { color:var(--muted); cursor:default; animation:none; }
     #dp-download.ready   { color:var(--green); border-color:var(--green); }
 
@@ -748,6 +775,7 @@
       <div id="dp-foot">
         <div id="dp-foot-btns">
           <button id="dp-play-all" onclick="playAll()">▶ Play All</button>
+          <button id="dp-stop" onclick="stopPlayback()" style="display:none">⏹ Stop</button>
           <button id="dp-download" onclick="startMerge()">⬇ Download MP3</button>
         </div>
       </div>
@@ -1448,6 +1476,7 @@ function selectThread(id, lat, lon) {
 
 async function openDetail(id) {
   selIncidentId = id;
+  stopPlayback();
   resetMergeBtn();
   const panel = document.getElementById('detail');
   panel.classList.add('open');
@@ -1490,7 +1519,7 @@ async function openDetail(id) {
     document.getElementById('dp-calls').innerHTML =
       (data.calls?.length)
         ? data.calls.map(c=>`
-          <div class="dp-call">
+          <div class="dp-call" data-call-id="${c.id}">
             <span class="dp-time">${fmtTime(c.ts)}</span>
             <div>
               <div class="dp-radio">
@@ -1564,7 +1593,7 @@ function renderUnitTimeline(units) {
     return `<div class="tl-row" title="${title}">
       <span class="tl-label ${cls}">${lbl}</span>
       <div class="tl-track">
-        <div class="tl-bar ${cls}" style="left:${left}%;width:${width}%"></div>
+        <div class="tl-bar ${cls}" data-radio="${u.radio_id}" style="left:${left}%;width:${width}%"></div>
       </div>
       <span class="tl-calls">${u.calls}</span>
     </div>`;
@@ -1587,7 +1616,7 @@ function renderConversations(convos, dispatchIds) {
     const bLbl  = c.unit_b.length > 6 ? '…' + c.unit_b.slice(-4) : c.unit_b;
     const pct   = (c.exchanges / maxExc * 100).toFixed(0);
     const color = (aDisp || bDisp) ? 'var(--orange)' : 'var(--blue)';
-    return `<div class="cv-row">
+    return `<div class="cv-row" data-a="${c.unit_a}" data-b="${c.unit_b}">
       <span class="cv-unit${aDisp?' dispatch':''}">${aLbl}${aDisp?' 📡':''}</span>
       <span class="cv-arrow">↔</span>
       <span class="cv-unit${bDisp?' dispatch':''}">${bLbl}${bDisp?' 📡':''}</span>
@@ -1669,14 +1698,91 @@ function resetMergeBtn() {
 
 // ═══ AUDIO ════════════════════════════════════════════════════
 const audioEl = document.getElementById('audio-player');
-function playCall(id) { audioEl.src='/api/calls/'+id+'/audio'; audioEl.play().catch(()=>{}); }
-function stopAudio()  { audioEl.pause(); audioEl.src=''; }
-function playAll()    { if (!playQ.length) return; playIdx=0; playNext(); }
-function playNext()   {
-  if (playIdx>=playQ.length) return;
-  audioEl.src='/api/calls/'+playQ[playIdx++]+'/audio';
-  audioEl.onended=playNext;
-  audioEl.play().catch(()=>{});
+let _nowPlayingCallId = null;
+let _nowPlayingRadio  = null;
+let _isPlayingAll     = false;
+
+function playCall(id) {
+  _nowPlayingCallId = id;
+  _isPlayingAll = false;
+  audioEl.src = '/api/calls/' + id + '/audio';
+  audioEl.onended = () => clearPlayState();
+  audioEl.play().catch(() => {});
+  highlightPlaying(id);
+  showStopBtn(true);
+}
+
+function stopPlayback() {
+  audioEl.pause();
+  audioEl.src = '';
+  audioEl.onended = null;
+  _isPlayingAll = false;
+  clearPlayState();
+  showStopBtn(false);
+}
+
+function stopAudio() { stopPlayback(); }
+
+function playAll() {
+  if (!playQ.length) return;
+  playIdx = 0;
+  _isPlayingAll = true;
+  showStopBtn(true);
+  playNext();
+}
+
+function playNext() {
+  if (playIdx >= playQ.length) {
+    _isPlayingAll = false;
+    clearPlayState();
+    showStopBtn(false);
+    return;
+  }
+  const callId = playQ[playIdx++];
+  _nowPlayingCallId = callId;
+  audioEl.src = '/api/calls/' + callId + '/audio';
+  audioEl.onended = playNext;
+  audioEl.play().catch(() => {});
+  highlightPlaying(callId);
+}
+
+function showStopBtn(show) {
+  document.getElementById('dp-stop').style.display = show ? 'block' : 'none';
+}
+
+function highlightPlaying(callId) {
+  // Highlight the call row
+  document.querySelectorAll('.dp-call').forEach(el => {
+    el.classList.toggle('playing', el.dataset.callId == callId);
+  });
+
+  // Find the radio_id for this call from the DOM
+  const row = document.querySelector(`.dp-call[data-call-id="${callId}"]`);
+  const fromEl = row?.querySelector('.dp-from');
+  _nowPlayingRadio = null;
+  if (fromEl) {
+    const m = fromEl.textContent.match(/FROM\s+(\S+)/);
+    if (m) _nowPlayingRadio = m[1];
+  }
+
+  // Highlight timeline bar for this radio
+  document.querySelectorAll('.tl-bar').forEach(el => {
+    el.classList.toggle('active-glow', el.dataset.radio === _nowPlayingRadio);
+  });
+
+  // Highlight conversation rows involving this radio
+  document.querySelectorAll('.cv-row').forEach(el => {
+    const involves = el.dataset.a === _nowPlayingRadio || el.dataset.b === _nowPlayingRadio;
+    el.classList.toggle('active-conv', involves);
+  });
+}
+
+function clearPlayState() {
+  _nowPlayingCallId = null;
+  _nowPlayingRadio  = null;
+  document.querySelectorAll('.dp-call.playing').forEach(el => el.classList.remove('playing'));
+  document.querySelectorAll('.tl-bar.active-glow').forEach(el => el.classList.remove('active-glow'));
+  document.querySelectorAll('.cv-row.active-conv').forEach(el => el.classList.remove('active-conv'));
 }
 
 // ═══ FEED HOVER PAUSE ════════════════════════════════════════
