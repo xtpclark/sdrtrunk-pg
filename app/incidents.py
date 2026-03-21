@@ -197,14 +197,18 @@ def _join(cur, incident_id, call_id, radio_id, reason, ts, address=None, lat=Non
                              WHERE incident_id=%s AND radio_id IS NOT NULL AND radio_id NOT IN ('0',''))
         WHERE id=%s
     """, (ts, incident_id, incident_id, incident_id))
-    # Promote unlocated incident if we now have a location
+    # Update incident location:
+    # - If unlocated → promote with this call's location (first pin on the map)
+    # - If already located → update address text to the newest geocoded address
+    #   (dispatch works multiple calls in sequence; the most recent address in
+    #   the thread is usually the most specific/correct one)
     if lat is not None and lon is not None and address:
         cur.execute("""
             UPDATE incidents SET
                 address      = %s,
                 location     = ST_SetSRID(ST_MakePoint(%s,%s), 4326),
                 has_location = true
-            WHERE id = %s AND has_location = false
+            WHERE id = %s
         """, (address, lon, lat, incident_id))
     log.debug("Joined call %d → incident %d (%s)", call_id, incident_id, reason)
 
