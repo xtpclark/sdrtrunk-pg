@@ -442,7 +442,10 @@
                gap:6px; align-items:start; animation:fadeUp .2s ease; }
     .dp-call:hover { background:rgba(255,255,255,.02); }
     .dp-time { font-size:10px; color:var(--muted); font-family:monospace; padding-top:1px; }
-    .dp-radio { font-size:10px; color:var(--blue); font-family:monospace; margin-bottom:2px; }
+    .dp-radio { font-size:10px; font-family:monospace; margin-bottom:2px; line-height:1.5; }
+    .dp-from  { color:var(--blue); }
+    .dp-to    { color:var(--muted); }
+    .dp-arrow { color:var(--dim); font-size:9px; margin:0 3px; }
     .dp-tx    { font-size:11px; color:#c0c0c0; font-style:italic; line-height:1.4; }
     .dp-play  { background:none; border:1px solid var(--border2); color:var(--blue);
                 font-size:11px; padding:2px 7px; border-radius:4px; cursor:pointer; white-space:nowrap; }
@@ -1393,7 +1396,7 @@ async function refreshFeed() {
       el.innerHTML=`
         <span class="fr-time">${fmtTime(row.ts)}</span>
         <span class="fr-badge">${badge(row.category)}</span>
-        <span class="fr-unit">${row.radio_id||'—'}</span>
+        <span class="fr-unit" title="FROM radio">${row.radio_id||'—'}</span>
         <span class="fr-tx">${row.transcript?'"'+row.transcript.slice(0,130)+'"':row.alpha_tag||''}</span>
         <button class="fr-play" ${dis} onclick="event.stopPropagation();playCall(${row.id})">▶</button>`;
       container.insertBefore(el, container.firstChild);
@@ -1463,7 +1466,11 @@ async function openDetail(id) {
           <div class="dp-call">
             <span class="dp-time">${fmtTime(c.ts)}</span>
             <div>
-              <div class="dp-radio">${c.radio_id||'—'} · ${c.alpha_tag||''}</div>
+              <div class="dp-radio">
+                <span class="dp-from"${dispatchIds.has(c.radio_id)?' style="color:var(--orange)"':''}>FROM ${c.radio_id||'?'}${dispatchIds.has(c.radio_id)?' 📡':''}</span>
+                <span class="dp-arrow">→</span>
+                <span class="dp-to">TO ${c.alpha_tag||'TG '+c.tg}</span>
+              </div>
               <div class="dp-tx">${c.transcript?'"'+c.transcript.slice(0,150)+'"':'<em style="color:var(--muted)">no transcript</em>'}</div>
             </div>
             <button class="dp-play" ${c.has_audio?'':'disabled'} onclick="playCall(${c.id})">▶</button>
