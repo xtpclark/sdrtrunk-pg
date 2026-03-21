@@ -359,7 +359,8 @@
     .inc-circle.a-government    { animation:govtGlow   2s infinite; }
     .inc-circle.a-city-services { animation:svcsGlow   2s infinite; }
     .inc-circle.a-other         { animation:policeGlow 2s infinite; }
-    .inc-circle.closed          { opacity:.28; filter:grayscale(90%); border-color:rgba(255,255,255,.1); }
+    .inc-circle.closed          { opacity:.45; filter:grayscale(60%); border-color:rgba(255,255,255,.15);
+                                    pointer-events:auto!important; cursor:pointer!important; }
 
     .leaflet-popup-content-wrapper { background:var(--card); color:var(--text);
       border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,.7);
@@ -1460,10 +1461,10 @@ async function refreshMapIncidents() {
       cur.add(p.id);
 
       if (incMarkers[p.id]) {
-        incMarkers[p.id].setIcon(mkIcon(cls,r,active?col:'#444'));
+        incMarkers[p.id].setIcon(mkIcon(cls,r,active?col:'#555'));
         continue;
       }
-      const mk = L.marker(ll,{icon:mkIcon(cls,r,active?col:'#444')})
+      const mk = L.marker(ll,{icon:mkIcon(cls,r,active?col:'#555'), interactive:true})
         .bindPopup(mkPopup(p),{maxWidth:300}).addTo(incLayer);
       mk.on('click',()=>{ selectThread(p.id,ll[0],ll[1]); openDetail(p.id); });
       incMarkers[p.id]=mk;
@@ -1476,10 +1477,13 @@ async function refreshMapIncidents() {
 }
 
 function mkIcon(cls,r,col) {
+  // Minimum 18px click target for closed (faded) incidents
+  const isClosed = cls.includes('closed');
+  const clickR = isClosed ? Math.max(r, 18) : r;
   return L.divIcon({
     className:'',
-    html:`<div class="${cls}" style="width:${r}px;height:${r}px;background:${col}"></div>`,
-    iconSize:[r,r], iconAnchor:[r/2,r/2], popupAnchor:[0,-r/2-4]
+    html:`<div class="${cls}" style="width:${clickR}px;height:${clickR}px;background:${col}"></div>`,
+    iconSize:[clickR,clickR], iconAnchor:[clickR/2,clickR/2], popupAnchor:[0,-clickR/2-4]
   });
 }
 function mkPopup(p) {
