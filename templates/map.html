@@ -589,6 +589,63 @@
     .alert-dismiss:hover { color:#fff; }
 
     #audio-player { display:none; }
+
+    /* ═══ THEME TOGGLE ════════════════════════════════════════════ */
+    #theme-toggle {
+      position:fixed; bottom:12px; right:12px; z-index:9999;
+      width:36px; height:36px; border-radius:50%;
+      background:var(--card); border:1px solid var(--border);
+      color:var(--text); font-size:16px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 2px 12px rgba(0,0,0,.4); transition:all .2s;
+    }
+    #theme-toggle:hover { background:var(--lift); transform:scale(1.1); }
+
+    /* ═══ LIGHT THEME ═════════════════════════════════════════════ */
+    body.light {
+      --bg:       #f5f5f5;
+      --surface:  #ffffff;
+      --card:     #ffffff;
+      --card2:    #f8f9fa;
+      --lift:     #e9ecef;
+      --border:   #dee2e6;
+      --border2:  #ced4da;
+      --text:     #1a1a2e;
+      --muted:    #6c757d;
+      --dim:      #adb5bd;
+      --blue:     #0969da;
+      --green:    #1a7f37;
+      --red:      #cf222e;
+      --orange:   #bf8700;
+      --police:   #2563eb;
+      --fire:     #dc2626;
+      --ems:      #ea580c;
+      --military: #7c3aed;
+      --govt:     #ca8a04;
+      --citysvcs: #0d9488;
+      --transport:#0891b2;
+      --schools:  #db2777;
+      --airport:  #0284c7;
+      --interop:  #64748b;
+      --other:    #4b5563;
+    }
+    body.light .leaflet-popup-content-wrapper { background:#fff; color:#1a1a2e; border-color:#dee2e6; }
+    body.light .leaflet-popup-tip { background:#fff; }
+    body.light .legend { background:rgba(255,255,255,.95); border-color:#dee2e6; color:#1a1a2e; }
+    body.light .incident-circle, body.light .inc-circle { border-color:rgba(0,0,0,.25); }
+    body.light .inc-circle.closed { opacity:.4; }
+    body.light #alert-bar { background:rgba(220,38,38,.08); color:#991b1b; border-color:rgba(220,38,38,.2); }
+    body.light .alert-msg { color:#991b1b; }
+    body.light .alert-meta { color:#b91c1c; }
+    body.light .alert-dismiss { color:#b91c1c; }
+    body.light #priority-card { background:rgba(220,38,38,.06); border-color:rgba(220,38,38,.25); }
+    body.light .pc-meta, body.light .pc-stat { color:#b91c1c; }
+    body.light .pc-tx { color:#991b1b; }
+    body.light .pu-tx { background:rgba(0,0,0,.04); color:#333; }
+    body.light .dp-tx { color:#444; }
+    body.light .fr-tx { color:#444; }
+    body.light .tc-tx { color:#555; }
+    body.light .sr-tx { color:#444; }
   </style>
 </head>
 <body>
@@ -794,6 +851,7 @@
 </div>
 
 <audio id="audio-player"></audio>
+<button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
@@ -835,9 +893,29 @@ let searchActive  = false;
 
 // ═══ MAP INIT ═════════════════════════════════════════════════
 const map = L.map('map',{center:MAP_CENTER,zoom:MAP_ZOOM,preferCanvas:true,zoomControl:true});
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+
+const TILES = {
+  dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+};
+let tileLayer = L.tileLayer(TILES.dark,{
   attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19
 }).addTo(map);
+
+// Theme
+let _theme = localStorage.getItem('sdrtrunk-theme') || 'dark';
+function applyTheme(t) {
+  _theme = t;
+  localStorage.setItem('sdrtrunk-theme', t);
+  document.body.classList.toggle('light', t === 'light');
+  document.getElementById('theme-toggle').textContent = t === 'dark' ? '🌙' : '☀️';
+  map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(TILES[t],{
+    attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19
+  }).addTo(map);
+}
+function toggleTheme() { applyTheme(_theme === 'dark' ? 'light' : 'dark'); }
+if (_theme === 'light') applyTheme('light');
 
 const heatLayer = L.heatLayer([],{
   radius:28, blur:22, maxZoom:17,
