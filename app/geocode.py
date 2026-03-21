@@ -105,6 +105,10 @@ def _normalize_address(address: str) -> str:
     expansion so we don't double-expand suffixes already in the correction.
     """
     s = address.strip()
+
+    # Whisper often dictates numbers as "7-9-3-6" or "8.5-3" instead of "7936" or "853"
+    # Collapse digit-dash-digit and digit-dot-digit sequences into solid numbers
+    s = _re.sub(r'(\d)[.\-,]\s*(?=\d)', r'\1', s)
     sl = s.lower()
 
     # Apply known corrections — longest match first, stop after first match

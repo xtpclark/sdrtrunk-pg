@@ -185,8 +185,10 @@ RULES:
   - Format intersections as "STREET1 and STREET2" (e.g. "Church Street and Johnson Avenue")
   - Include apartment/unit if spoken (e.g. "827 Main Avenue Apartment 311")
 {"  - Common streets: " + streets_hint if streets_hint else ""}
+  - SKIP bare apartment/room/unit numbers without a street (e.g. "apartment 311", "Room 216" alone is NOT an address)
   - SKIP if Whisper clearly hallucinated (nonsense words, phonetic artifacts, "different street")
   - SKIP pure named locations like "the mall" or "the stadium" — use "location" type instead
+  - When numbers are dictated with dashes (e.g. "7-9-3-6 Turner Road"), combine into "7936 Turner Road"
 
 "unit" — radio unit IDs, apparatus, badge numbers (e.g. "Unit 4", "Engine 7", "Medic 16", "Badge 1234")
 
