@@ -402,6 +402,37 @@
     .unit-chip { background:var(--lift); color:var(--text); font-size:10px;
                  font-family:monospace; padding:2px 8px; border-radius:8px;
                  border:1px solid var(--border); }
+    .unit-chip.dispatch { border-color:var(--orange); color:var(--orange); }
+
+    /* Unit timeline */
+    #dp-timeline { padding:8px 14px; border-bottom:1px solid var(--border); flex-shrink:0; display:none; }
+    .tl-title { font-size:9px; color:var(--muted); text-transform:uppercase;
+                letter-spacing:.4px; margin-bottom:6px; }
+    .tl-row { display:flex; align-items:center; gap:6px; margin-bottom:3px; height:16px; }
+    .tl-label { font-size:9px; font-family:monospace; color:var(--muted);
+                width:60px; text-align:right; flex-shrink:0;
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tl-label.dispatch { color:var(--orange); }
+    .tl-track { flex:1; height:8px; background:var(--lift); border-radius:2px;
+                position:relative; overflow:hidden; }
+    .tl-bar { position:absolute; height:100%; border-radius:2px; min-width:3px;
+              transition:left .3s, width .3s; }
+    .tl-bar.dispatch { background:var(--orange); opacity:.7; }
+    .tl-bar.field    { background:var(--blue); }
+    .tl-calls { font-size:9px; color:var(--muted); width:24px; text-align:right; flex-shrink:0; }
+
+    /* Conversations */
+    #dp-convos { padding:8px 14px; border-bottom:1px solid var(--border); flex-shrink:0; display:none; }
+    .cv-title { font-size:9px; color:var(--muted); text-transform:uppercase;
+                letter-spacing:.4px; margin-bottom:6px; }
+    .cv-row { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+    .cv-unit { font-size:10px; font-family:monospace; color:var(--text);
+               min-width:55px; text-align:right; }
+    .cv-unit.dispatch { color:var(--orange); }
+    .cv-arrow { color:var(--muted); font-size:11px; }
+    .cv-bar { flex:1; height:6px; background:var(--lift); border-radius:2px; overflow:hidden; }
+    .cv-fill { height:100%; border-radius:2px; background:var(--blue); }
+    .cv-cnt { font-size:10px; color:var(--muted); width:55px; font-variant-numeric:tabular-nums; }
 
     #dp-calls { flex:1; overflow-y:auto; }
     #dp-calls::-webkit-scrollbar { width:3px; }
@@ -674,6 +705,14 @@
       <div id="dp-units">
         <div id="dp-units-lbl">Units on scene</div>
         <div id="dp-units-inner"></div>
+      </div>
+      <div id="dp-timeline">
+        <div class="tl-title">Unit Activity Timeline</div>
+        <div id="dp-tl-rows"></div>
+      </div>
+      <div id="dp-convos">
+        <div class="cv-title">Conversations</div>
+        <div id="dp-cv-rows"></div>
       </div>
       <div id="dp-calls"></div>
       <div id="dp-foot">
@@ -1385,6 +1424,10 @@ async function openDetail(id) {
   document.getElementById('dp-addr').textContent='Loading…';
   document.getElementById('dp-meta').textContent='';
   document.getElementById('dp-units-inner').innerHTML='';
+  document.getElementById('dp-tl-rows').innerHTML='';
+  document.getElementById('dp-cv-rows').innerHTML='';
+  document.getElementById('dp-timeline').style.display='none';
+  document.getElementById('dp-convos').style.display='none';
   document.getElementById('dp-calls').innerHTML='';
 
   try {
@@ -1398,10 +1441,21 @@ async function openDetail(id) {
       `${badge(data.category)} · Opened ${mins}m ago · ${data.call_count} calls · ${data.unit_count} units · ` +
       `<span style="color:${data.status==='active'?'var(--green)':'var(--muted)'}">${data.status}</span>`;
 
+    // Unit chips — dispatchers get a special style
+    const dispatchIds = new Set((data.unit_timeline||[]).filter(u=>u.is_dispatch).map(u=>u.radio_id));
     document.getElementById('dp-units-inner').innerHTML =
       (data.units?.length)
-        ? data.units.map(u=>`<span class="unit-chip">${u}</span>`).join('')
+        ? data.units.map(u=>{
+            const isD = dispatchIds.has(u);
+            return `<span class="unit-chip${isD?' dispatch':''}" title="${isD?'Dispatch console':'Field unit'}">${u}${isD?' 📡':''}</span>`;
+          }).join('')
         : '<span style="color:var(--muted);font-size:11px">None recorded</span>';
+
+    // Unit activity timeline
+    renderUnitTimeline(data.unit_timeline || []);
+
+    // Conversation pairs
+    renderConversations(data.conversations || [], dispatchIds);
 
     document.getElementById('dp-calls').innerHTML =
       (data.calls?.length)
@@ -1430,6 +1484,69 @@ function closeDetail() {
   document.querySelectorAll('.tc').forEach(el=>el.classList.remove('sel'));
   hlFeed(null);
   stopAudio();
+}
+
+// ═══ UNIT ACTIVITY TIMELINE ════════════════════════════════════
+function renderUnitTimeline(units) {
+  const el = document.getElementById('dp-timeline');
+  const rows = document.getElementById('dp-tl-rows');
+  if (!units.length) { el.style.display='none'; return; }
+  el.style.display='block';
+
+  // Find time range for the whole incident
+  let minT = Infinity, maxT = -Infinity;
+  units.forEach(u => {
+    if (u.first_keyed) minT = Math.min(minT, new Date(u.first_keyed).getTime());
+    if (u.last_keyed)  maxT = Math.max(maxT, new Date(u.last_keyed).getTime());
+  });
+  const span = Math.max(maxT - minT, 60000); // at least 1 minute
+
+  rows.innerHTML = units.slice(0, 20).map(u => {
+    const start = u.first_keyed ? new Date(u.first_keyed).getTime() : minT;
+    const end   = u.last_keyed  ? new Date(u.last_keyed).getTime()  : start;
+    const left  = ((start - minT) / span * 100).toFixed(1);
+    const width = Math.max(1, ((end - start) / span * 100)).toFixed(1);
+    const cls   = u.is_dispatch ? 'dispatch' : 'field';
+    const lbl   = u.radio_id.length > 6 ? '…' + u.radio_id.slice(-4) : u.radio_id;
+    const title = `${u.radio_id}: ${u.calls} calls, ${u.active_mins}m active\n` +
+                  `${fmtTime(u.first_keyed)} → ${fmtTime(u.last_keyed)}\n` +
+                  `TGs: ${u.tgs.join(', ')}`;
+    return `<div class="tl-row" title="${title}">
+      <span class="tl-label ${cls}">${lbl}</span>
+      <div class="tl-track">
+        <div class="tl-bar ${cls}" style="left:${left}%;width:${width}%"></div>
+      </div>
+      <span class="tl-calls">${u.calls}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══ CONVERSATION GRAPH ═══════════════════════════════════════
+function renderConversations(convos, dispatchIds) {
+  const el = document.getElementById('dp-convos');
+  const rows = document.getElementById('dp-cv-rows');
+  if (!convos.length) { el.style.display='none'; return; }
+  el.style.display='block';
+
+  const maxExc = Math.max(...convos.map(c => c.exchanges), 1);
+
+  rows.innerHTML = convos.slice(0, 12).map(c => {
+    const aDisp = c.a_dispatch || dispatchIds.has(c.unit_a);
+    const bDisp = c.b_dispatch || dispatchIds.has(c.unit_b);
+    const aLbl  = c.unit_a.length > 6 ? '…' + c.unit_a.slice(-4) : c.unit_a;
+    const bLbl  = c.unit_b.length > 6 ? '…' + c.unit_b.slice(-4) : c.unit_b;
+    const pct   = (c.exchanges / maxExc * 100).toFixed(0);
+    const color = (aDisp || bDisp) ? 'var(--orange)' : 'var(--blue)';
+    return `<div class="cv-row">
+      <span class="cv-unit${aDisp?' dispatch':''}">${aLbl}${aDisp?' 📡':''}</span>
+      <span class="cv-arrow">↔</span>
+      <span class="cv-unit${bDisp?' dispatch':''}">${bLbl}${bDisp?' 📡':''}</span>
+      <div class="cv-bar">
+        <div class="cv-fill" style="width:${pct}%;background:${color}"></div>
+      </div>
+      <span class="cv-cnt">${c.exchanges} exc · ${c.avg_gap}s</span>
+    </div>`;
+  }).join('');
 }
 
 // ═══ INCIDENT MERGE / DOWNLOAD ════════════════════════════════

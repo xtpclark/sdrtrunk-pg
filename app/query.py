@@ -364,8 +364,94 @@ def incident_detail(incident_id):
         )
         units = [r["radio_id"] for r in cur.fetchall()]
 
-    incident["calls"] = calls
-    incident["units"] = units
+        # ── Unit activity timeline ──────────────────────────────────
+        cur.execute(
+            """
+            SELECT ic.radio_id,
+                   min(c.ts) AT TIME ZONE 'America/New_York' AS first_keyed,
+                   max(c.ts) AT TIME ZONE 'America/New_York' AS last_keyed,
+                   count(*) AS calls,
+                   round(extract(epoch FROM max(c.ts)-min(c.ts))/60, 1) AS active_mins,
+                   array_agg(DISTINCT t.alpha_tag ORDER BY t.alpha_tag) AS tgs
+            FROM incident_calls ic
+            JOIN calls c ON c.id = ic.call_id
+            LEFT JOIN talkgroups t ON t.tg_decimal = c.tg
+            WHERE ic.incident_id = %s
+              AND ic.radio_id IS NOT NULL AND ic.radio_id != '0'
+            GROUP BY ic.radio_id
+            ORDER BY min(c.ts)
+            """,
+            (incident_id,),
+        )
+        unit_timeline = []
+        for r in cur.fetchall():
+            unit_timeline.append({
+                "radio_id":    r["radio_id"],
+                "first_keyed": r["first_keyed"].isoformat() if r["first_keyed"] else None,
+                "last_keyed":  r["last_keyed"].isoformat() if r["last_keyed"] else None,
+                "calls":       r["calls"],
+                "active_mins": float(r["active_mins"]) if r["active_mins"] else 0,
+                "tgs":         r["tgs"] or [],
+                "is_dispatch": len(r["radio_id"]) <= 5 and r["radio_id"].isdigit() and int(r["radio_id"]) < 50000,
+            })
+
+        # ── Conversation pairs ──────────────────────────────────────
+        cur.execute(
+            """
+            WITH ordered AS (
+                SELECT c.ts, c.radio_id, c.tg,
+                       LAG(c.radio_id) OVER (PARTITION BY c.tg ORDER BY c.ts) AS prev_radio,
+                       extract(epoch FROM c.ts -
+                           LAG(c.ts) OVER (PARTITION BY c.tg ORDER BY c.ts)) AS gap_sec
+                FROM incident_calls ic
+                JOIN calls c ON c.id = ic.call_id
+                WHERE ic.incident_id = %s
+            )
+            SELECT radio_id AS unit_a, prev_radio AS unit_b,
+                   count(*) AS exchanges,
+                   round(avg(gap_sec)::numeric, 1) AS avg_gap_sec
+            FROM ordered
+            WHERE gap_sec < 10
+              AND radio_id != prev_radio
+              AND radio_id != '0' AND prev_radio != '0'
+              AND radio_id IS NOT NULL AND prev_radio IS NOT NULL
+            GROUP BY radio_id, prev_radio
+            HAVING count(*) >= 2
+            ORDER BY exchanges DESC
+            LIMIT 20
+            """,
+            (incident_id,),
+        )
+        # Merge bidirectional pairs: A→B and B→A become one row
+        raw_pairs = cur.fetchall()
+        seen = set()
+        conversations = []
+        for r in raw_pairs:
+            pair = tuple(sorted([r["unit_a"], r["unit_b"]]))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            # Sum exchanges from both directions
+            total_exc = r["exchanges"]
+            for r2 in raw_pairs:
+                if tuple(sorted([r2["unit_a"], r2["unit_b"]])) == pair and r2 is not r:
+                    total_exc += r2["exchanges"]
+                    break
+            is_a_dispatch = len(pair[0]) <= 5 and pair[0].isdigit() and int(pair[0]) < 50000
+            is_b_dispatch = len(pair[1]) <= 5 and pair[1].isdigit() and int(pair[1]) < 50000
+            conversations.append({
+                "unit_a":     pair[0],
+                "unit_b":     pair[1],
+                "exchanges":  total_exc,
+                "avg_gap":    float(r["avg_gap_sec"]),
+                "a_dispatch": is_a_dispatch,
+                "b_dispatch": is_b_dispatch,
+            })
+
+    incident["calls"]         = calls
+    incident["units"]         = units
+    incident["unit_timeline"] = unit_timeline
+    incident["conversations"] = conversations
     return jsonify(incident)
 
 
