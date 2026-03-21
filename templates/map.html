@@ -404,6 +404,22 @@
                  font-family:monospace; padding:2px 8px; border-radius:8px;
                  border:1px solid var(--border); }
     .unit-chip.dispatch { border-color:var(--orange); color:var(--orange); }
+    .unit-chip.speaking {
+      animation:chipPulse 1s infinite;
+      border-color:var(--blue); color:var(--blue); font-weight:800;
+    }
+    .unit-chip.dispatch.speaking { border-color:var(--orange); color:var(--orange); }
+    @keyframes chipPulse {
+      0%,100% { box-shadow:0 0 0 0 rgba(88,166,255,.5); }
+      50%     { box-shadow:0 0 0 4px rgba(88,166,255,0); }
+    }
+    .unit-chip.dispatch.speaking {
+      animation:chipPulseDisp 1s infinite;
+    }
+    @keyframes chipPulseDisp {
+      0%,100% { box-shadow:0 0 0 0 rgba(210,153,34,.5); }
+      50%     { box-shadow:0 0 0 4px rgba(210,153,34,0); }
+    }
 
     /* Collapsible sections */
     .dp-section-hdr {
@@ -1838,8 +1854,11 @@ function highlightPlaying(callId) {
     el.classList.toggle('playing', el.dataset.callId == callId);
   });
 
-  // Find the radio_id for this call from the DOM
+  // Auto-scroll the playing call into view
   const row = document.querySelector(`.dp-call[data-call-id="${callId}"]`);
+  if (row) row.scrollIntoView({ behavior:'smooth', block:'nearest' });
+
+  // Find the radio_id for this call from the DOM
   const fromEl = row?.querySelector('.dp-from');
   _nowPlayingRadio = null;
   if (fromEl) {
@@ -1857,6 +1876,12 @@ function highlightPlaying(callId) {
     const involves = el.dataset.a === _nowPlayingRadio || el.dataset.b === _nowPlayingRadio;
     el.classList.toggle('active-conv', involves);
   });
+
+  // Pulse the speaking unit chip
+  document.querySelectorAll('.unit-chip').forEach(el => {
+    const chipRadio = el.textContent.replace(' 📡','').trim();
+    el.classList.toggle('speaking', chipRadio === _nowPlayingRadio);
+  });
 }
 
 function clearPlayState() {
@@ -1865,6 +1890,7 @@ function clearPlayState() {
   document.querySelectorAll('.dp-call.playing').forEach(el => el.classList.remove('playing'));
   document.querySelectorAll('.tl-bar.active-glow').forEach(el => el.classList.remove('active-glow'));
   document.querySelectorAll('.cv-row.active-conv').forEach(el => el.classList.remove('active-conv'));
+  document.querySelectorAll('.unit-chip.speaking').forEach(el => el.classList.remove('speaking'));
 }
 
 // ═══ FEED HOVER PAUSE ════════════════════════════════════════
