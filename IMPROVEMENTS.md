@@ -13,6 +13,16 @@ Last updated: 2026-03-21
 - [ ] **README screenshots** — grab screenshots of light mode, search, detail panel for the README
 - [ ] **`.env.example`** — complete example with all config vars documented
 
+### Dispatcher-Centric Threading (alternative model)
+The current threading model groups calls into incidents by geo/radio/TG proximity. This works but struggles with dispatch channels (NPD 2nd Main etc.) where one dispatcher handles sequential unrelated calls that get falsely merged.
+
+**The insight:** dispatchers ARE the natural thread. Radio 16041 manages one call at a time — their stream is already a perfect sequential log. Addresses become lightweight map markers linked to moments in the dispatcher's timeline, not heavyweight incident blobs.
+
+- [ ] **Dispatcher view tab** — new sidebar tab showing each active dispatcher's sequential call stream (radio_ids <50000 with high call counts). Each entry shows the call transcript, FROM unit, and any extracted address as a clickable map marker.
+- [ ] **Dispatcher call segmentation** — detect when a dispatcher moves to a new call: "clear" codes, new unit addressing, topic change. Split their stream into logical segments.
+- [ ] **Hybrid model** — keep current incident model for geo-located events (it works well for multi-unit responses like structure fires). Add dispatcher view as a second lens on the same data. Two tabs, same calls, different groupings.
+- [ ] **Address pins** — map markers that link to the specific dispatcher stream entry where the address was mentioned, not to a blob incident. Lightweight, precise, no false grouping.
+
 ### Incident Intelligence
 - [ ] **Clear-code auto-close** — detect "10-8", "back in service", "clear", "show me code 4" in transcript → auto-close the incident immediately instead of waiting 20-min stale timer. This is the #1 thread quality issue: dispatch channels carry sequential unrelated calls that get merged because the previous incident didn't close fast enough.
 - [ ] **Incident AI summary** — when an incident closes, Gemini Flash reads all transcripts and writes a 2-sentence summary (e.g. "Single-vehicle accident at Church and 18th, Nissan Sentra, tow dispatched, cleared at 15:24"). Store in `incidents.summary`, show in detail panel and sidebar card.
